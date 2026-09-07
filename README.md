@@ -11,7 +11,7 @@ py -m pip install -r requirements.txt
 py app.py
 ```
 
-Open `http://127.0.0.1:8765` if it does not open automatically. Paste a link and click **Confirm**. The app presents an MP4 option labeled with its resolution; clips of 30 seconds or less also receive a `.gif format` option. Selecting a format immediately opens Windows' **Save As** dialog, where you choose the exact filename and destination. Cancelling uses the suggested filename directly in the app's `downloads/` folder—no source-named folders are created. GIF conversion requires [FFmpeg](https://ffmpeg.org/download.html).
+Open `http://127.0.0.1:8765` if it does not open automatically. Paste a link and click **Confirm**. The app presents an MP4 option labeled with its resolution; clips of 30 seconds or less also receive a `.gif format` option. Selecting a format immediately opens Windows' **Save As** dialog, where you choose the exact filename and destination. The app remembers that destination for the next Save As dialog. Cancelling uses a random filename directly in the last selected folder—no source-named folders are created. The included runtime dependency provides GIF conversion automatically.
 
 ## Boundaries
 
