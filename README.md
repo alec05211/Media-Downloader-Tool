@@ -11,7 +11,7 @@ py -m pip install -r requirements.txt
 py app.py
 ```
 
-Open `http://127.0.0.1:8765` if it does not open automatically. When you confirm a download, Windows will ask where to save it. Cancel that picker to use the app's `downloads/` folder. Normal video downloads use a single, already-combined media stream; this avoids separate audio and video files. The expandable Options control holds MP3 extraction and can accommodate future settings. Files are organized by extractor.
+Open `http://127.0.0.1:8765` if it does not open automatically. Paste a link and click **Confirm**. The app presents an MP4 option labeled with its resolution; clips of 30 seconds or less also receive a `.gif format` option. Selecting a format immediately opens Windows' **Save As** dialog, where you choose the exact filename and destination. Cancelling uses the suggested filename directly in the app's `downloads/` folder—no source-named folders are created. GIF conversion requires [FFmpeg](https://ffmpeg.org/download.html).
 
 ## Boundaries
 
