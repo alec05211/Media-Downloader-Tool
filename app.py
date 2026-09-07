@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
 import subprocess
+import sys
 import threading
 import webbrowser
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
+import tkinter as tk
+from tkinter import filedialog
 
 APP_ROOT = Path(__file__).parent
 DOWNLOADS = APP_ROOT / "downloads"
@@ -27,16 +29,20 @@ class Provider:
     def matches(self, host: str) -> bool:
         return any(host == domain or host.endswith("." + domain) for domain in self.domains)
 
-    def command(self, url: str, audio_only: bool) -> list[str]:
+    def command(self, url: str, destination: str, audio_only: bool) -> list[str]:
         # Each provider gets an adapter here. Platform-specific options should only
         # be added when they are officially supported and do not bypass controls.
-        executable = shutil.which("yt-dlp") or "yt-dlp"
-        args = [executable, "--no-playlist", "--restrict-filenames", "--newline"]
+        # Running as a module guarantees the same Python environment used to
+        # start this app is also used to locate the installed yt-dlp package.
+        args = [sys.executable, "-m", "yt_dlp", "--no-playlist", "--restrict-filenames", "--newline"]
         if audio_only:
             args += ["-x", "--audio-format", "mp3"]
         else:
-            args += ["-f", "bv*+ba/b", "--merge-output-format", "mp4"]
-        return args + ["-o", str(DOWNLOADS / "%(extractor)s" / "%(title)s.%(ext)s"), url]
+            # Prefer a progressive (already muxed) file. This intentionally
+            # trades a little maximum resolution for one finished download
+            # without requiring FFmpeg to merge separate audio/video streams.
+            args += ["-f", "best[ext=mp4]/best"]
+        return args + ["-o", str(Path(destination) / "%(extractor)s" / "%(title)s.%(ext)s"), url]
 
 
 PROVIDERS = (
@@ -56,10 +62,20 @@ def provider_for(url: str) -> Provider | None:
     return next((provider for provider in PROVIDERS if provider.matches(host)), None)
 
 
+def choose_destination() -> str:
+    """Show Windows' native folder picker; a cancel retains the default folder."""
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+    selected = filedialog.askdirectory(initialdir=DOWNLOADS, title="Choose download folder")
+    root.destroy()
+    return selected or str(DOWNLOADS)
+
+
 def run_download(job: dict[str, str], provider: Provider, audio_only: bool) -> None:
     try:
         process = subprocess.Popen(
-            provider.command(job["url"], audio_only), cwd=APP_ROOT,
+            provider.command(job["url"], job["destination"], audio_only), cwd=APP_ROOT,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace",
         )
         output, _ = process.communicate()
@@ -74,12 +90,11 @@ def run_download(job: dict[str, str], provider: Provider, audio_only: bool) -> N
 
 
 PAGE = r'''<!doctype html><html><head><meta charset="utf-8"><title>Media Downloader</title>
-<style>body{font-family:system-ui,sans-serif;max-width:780px;margin:48px auto;background:#10131a;color:#eef2ff;padding:0 20px}h1{margin-bottom:4px}.muted{color:#aab4cd}form,.job{background:#1c2230;border:1px solid #2e3950;border-radius:10px;padding:18px;margin:20px 0}input{width:100%;box-sizing:border-box;padding:12px;border-radius:6px;border:1px solid #4b5b7c;background:#111722;color:white;font-size:15px}button{margin-top:12px;padding:10px 14px;background:#76a7ff;border:0;border-radius:6px;font-weight:700;cursor:pointer}label{display:block;margin-top:12px}pre{white-space:pre-wrap;max-height:160px;overflow:auto;color:#c8d4ec}.tag{background:#273650;padding:4px 8px;border-radius:12px;font-size:12px}footer{font-size:13px;color:#aab4cd}</style></head><body>
+<style>body{font-family:system-ui,sans-serif;max-width:780px;margin:48px auto;background:#10131a;color:#eef2ff;padding:0 20px}h1{margin-bottom:4px}.muted{color:#aab4cd}form{background:#1c2230;border:1px solid #2e3950;border-radius:10px;padding:18px;margin:20px 0}input{width:100%;box-sizing:border-box;padding:12px;border-radius:6px;border:1px solid #4b5b7c;background:#111722;color:white;font-size:15px}button,summary{margin-top:12px;padding:10px 14px;background:#76a7ff;border:0;border-radius:6px;font-weight:700;cursor:pointer;display:inline-block}details{display:inline-block;margin-left:8px;position:relative}details>div{position:absolute;right:0;z-index:1;width:230px;background:#273247;border:1px solid #4b5b7c;border-radius:7px;padding:12px;box-shadow:0 8px 24px #0008}details label{margin:0;display:block}details input{width:auto}footer{font-size:13px;color:#aab4cd}</style></head><body>
 <h1>Media Downloader</h1><p class="muted">Local downloads for public media you own or are allowed to save.</p>
-<form id="form"><label>Video link</label><input id="url" type="url" placeholder="Paste a YouTube, TikTok, Instagram, X, or Reddit link" required><label><input id="audio" type="checkbox" style="width:auto"> Extract audio as MP3</label><button>Download</button><p id="message" class="muted"></p></form>
-<h2>Provider adapters</h2><div id="providers" class="muted"></div><h2>Jobs</h2><div id="jobs"></div>
+<form id="form"><label>Video link</label><input id="url" type="url" placeholder="Paste a YouTube, TikTok, Instagram, X, or Reddit link" required><button>Confirm download</button><details><summary>Options</summary><div><label><input id="audio" type="checkbox"> Extract audio as MP3</label></div></details><p id="message" class="muted"></p></form>
 <footer>No DRM, login/session bypass, private-content access, or watermark removal is included. Some platforms may serve branded media; this app does not alter it.</footer>
-<script>async function refresh(){let d=await fetch('/api/status').then(r=>r.json());providers.innerHTML=d.providers.map(p=>`<p><span class="tag">${p.name}</span> ${p.description}</p>`).join('');jobs.innerHTML=d.jobs.length?d.jobs.map(j=>`<div class="job"><b>${j.provider}</b> — ${j.status}<br><span class="muted">${j.url}</span>${j.log?`<pre>${j.log}</pre>`:''}</div>`).join(''):'<p class="muted">No downloads yet.</p>'}form.onsubmit=async e=>{e.preventDefault();message.textContent='Starting…';let r=await fetch('/api/download',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:url.value,audio:audio.checked})});let d=await r.json();message.textContent=d.message||d.error; if(r.ok)form.reset();refresh()};refresh();setInterval(refresh,2000)</script></body></html>'''
+<script>let currentUrl='';async function check(){if(!currentUrl)return;let d=await fetch('/api/status').then(r=>r.json());let j=d.jobs.find(x=>x.url===currentUrl);if(!j)return;if(j.status==='complete'){message.textContent='Download complete.';currentUrl=''}else if(j.status==='failed'){message.textContent='Download failed: '+(j.log||'Unknown error');currentUrl=''}}form.onsubmit=async e=>{e.preventDefault();currentUrl=url.value;message.textContent='Choose a destination folder in the window that opens…';let r=await fetch('/api/download',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:currentUrl,audio:audio.checked})});let d=await r.json();message.textContent=d.message||d.error;if(r.ok)form.reset();else currentUrl=''};setInterval(check,1500)</script></body></html>'''
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -101,10 +116,11 @@ class Handler(BaseHTTPRequestHandler):
             if not re.match(r"^https?://", url): raise ValueError("Please enter a valid http(s) link.")
             provider = provider_for(url)
             if not provider: raise ValueError("Supported sources: YouTube, TikTok, Instagram, X, and Reddit.")
-            job = {"url": url, "provider": provider.name, "status": "downloading", "log": ""}
+            destination = choose_destination()
+            job = {"url": url, "provider": provider.name, "destination": destination, "status": "downloading", "log": ""}
             with LOCK: JOBS.append(job)
             threading.Thread(target=run_download, args=(job, provider, bool(payload.get("audio"))), daemon=True).start()
-            self.send_json({"message": f"Started {provider.name} download."})
+            self.send_json({"message": f"Started {provider.name} download to {destination}."})
         except (ValueError, json.JSONDecodeError) as exc: self.send_json({"error": str(exc)}, 400)
 
     def log_message(self, *_: object) -> None: pass
