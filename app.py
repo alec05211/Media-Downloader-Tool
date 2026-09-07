@@ -38,7 +38,7 @@ def safe_name(value: str) -> str:
     return (re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", value).strip(" .") or "download")[:120]
 
 def choose_path(title: str, mode: str) -> str:
-    suffix = ".gif" if mode == "gif" else ".mp4"
+    suffix = {"gif": ".gif", "audio": ".mp3"}.get(mode, ".mp4")
     # A neutral default prevents source titles from becoming part of the path.
     name = "".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(12)) + suffix
     try:
@@ -47,7 +47,7 @@ def choose_path(title: str, mode: str) -> str:
     except OSError: last_folder = DOWNLOADS
     root = Tk(); root.withdraw(); root.attributes("-topmost", True)
     result = filedialog.asksaveasfilename(title="Save download as", initialdir=last_folder, initialfile=name,
-        defaultextension=suffix, filetypes=[("GIF image","*.gif")] if mode == "gif" else [("MP4 video","*.mp4")])
+        defaultextension=suffix, filetypes=([("GIF image","*.gif")] if mode == "gif" else [("MP3 audio","*.mp3")] if mode == "audio" else [("MP4 video","*.mp4")]))
     root.destroy()
     chosen = Path(result) if result else last_folder / name
     try: LAST_SAVE_FOLDER.write_text(str(chosen.parent), encoding="utf-8")
@@ -60,6 +60,17 @@ def ffmpeg_binary() -> str | None:
         import imageio_ffmpeg
         return imageio_ffmpeg.get_ffmpeg_exe()
     except (ImportError, RuntimeError): return None
+
+def clipboard_text() -> str:
+    """Read the desktop clipboard so paste works even when browser permission is denied."""
+    root = Tk()
+    root.withdraw()
+    try:
+        return root.clipboard_get()
+    except Exception:
+        return ""
+    finally:
+        root.destroy()
 
 def classify_failure(text: str) -> tuple[str, str]:
     value = text.lower()
@@ -89,13 +100,15 @@ def preview(url: str) -> dict[str, object]:
 def download(job: dict[str,str], provider: Provider) -> None:
     try:
         ffmpeg = ffmpeg_binary()
-        if job["mode"] == "gif" and not ffmpeg: raise RuntimeError("GIF conversion runtime is missing. Run start.bat again, then retry.")
+        if job["mode"] in {"gif", "audio"} and not ffmpeg: raise RuntimeError("Conversion runtime is missing. Run start.bat again, then retry.")
         process = subprocess.Popen(provider.command(job["url"],job["path"],job["mode"],ffmpeg), cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
         output,_ = process.communicate()
-        if process.returncode == 0 and job["mode"] == "gif":
+        if process.returncode == 0 and job["mode"] in {"gif", "audio"}:
             intermediate = str(Path(job["path"]).with_suffix(".mp4"))
+            conversion_args = ([ffmpeg, "-y", "-i", intermediate, "-vf", "fps=12,scale=640:-1:flags=lanczos", job["path"]]
+                               if job["mode"] == "gif" else [ffmpeg, "-y", "-i", intermediate, "-vn", "-codec:a", "libmp3lame", "-q:a", "2", job["path"]])
             conversion = subprocess.run(
-                [ffmpeg, "-y", "-i", intermediate, "-vf", "fps=12,scale=640:-1:flags=lanczos", job["path"]],
+                conversion_args,
                 capture_output=True, text=True, encoding="utf-8", errors="replace",
             )
             output += conversion.stdout + conversion.stderr
@@ -120,6 +133,7 @@ PAGE = PAGE.replace('</style>', '.entry button:disabled{background:#526174;curso
 PAGE = PAGE.replace('</style>', 'dialog{max-width:680px;width:calc(100% - 40px);background:#1c2230;color:#eef2ff;border:1px solid #4b5b7c;border-radius:10px;padding:20px}dialog::backdrop{background:#0009}dialog textarea{width:100%;height:210px;box-sizing:border-box;background:#111722;color:#eef2ff;border:1px solid #4b5b7c;border-radius:6px;padding:10px;resize:vertical}dialog button{margin:12px 8px 0 0;padding:8px 12px;border:0;border-radius:6px;background:#76a7ff;font-weight:700;cursor:pointer}</style>')
 PAGE = PAGE.replace('<div id="preview"></div>', '<div id="preview"></div><dialog id="errorDialog"><textarea id="errorText" readonly aria-label="Error details"></textarea><button type="button" onclick="copyError()">Copy details</button><button type="button" onclick="errorDialog.close()">Close</button></dialog>')
 PAGE = PAGE.replace("let active='';", "let active='';function showError(code,text,raw=''){errorText.value=code+' — '+text+(raw?'\\n\\nDiagnostic: '+raw:'');errorDialog.showModal();errorText.focus();errorText.select()}async function copyError(){try{await navigator.clipboard.writeText(errorText.value)}catch{errorText.select();document.execCommand('copy')}}function clearError(){}")
+PAGE = PAGE.replace("let active='';function showError", "const form=document.getElementById('form'),url=document.getElementById('url'),action=document.getElementById('action'),message=document.getElementById('message'),preview=document.getElementById('preview'),errorDialog=document.getElementById('errorDialog'),errorText=document.getElementById('errorText');let active='';function showError")
 PAGE = PAGE.replace("function clearError(){}", "function clearError(){}function setLoading(loading){action.disabled=loading;action.innerHTML=loading?'<span class=\"spinner\"></span>':(url.value.trim()?'Confirm':'Paste link')}")
 PAGE = PAGE.replace("if(!r.ok){message.textContent=d.error;return}", "if(!r.ok){showError(d.code||'API400',d.error);return}")
 PAGE = PAGE.replace("message.textContent=d.message||d.error}", "if(!r.ok)showError(d.code||'API400',d.error)}")
@@ -128,6 +142,49 @@ PAGE = PAGE.replace("url.oninput=()=>{preview.innerHTML='';updateAction()}", "ur
 PAGE = PAGE.replace("async function choose(){message.textContent='Checking available formats…';", "async function choose(){setLoading(true);message.textContent='Checking available formats…';")
 PAGE = PAGE.replace("if(!r.ok){showError(d.code||'API400',d.error);return}", "if(!r.ok){showError(d.code||'API400',d.error);setLoading(false);return}")
 PAGE = PAGE.replace("GIF is available for clips up to 30 seconds.'}", "GIF is available for clips up to 30 seconds.';setLoading(false)}")
+PAGE = PAGE.replace("let gif=d.seconds>0&&d.seconds<=30;", "let gif=d.seconds<=30;")
+PAGE = PAGE.replace('</style>', '.format-options{display:flex;justify-content:center;align-items:center;flex-wrap:wrap;gap:8px;margin:18px auto}.format-options .choice{margin:0}</style>')
+PAGE = PAGE.replace('<p>Choose a format to download:</p><button class="choice" data-mode="video">MP4 video — ${esc(d.resolution)}</button>', '<section class="format-options"><span>Choose a format to download:</span><button class="choice" data-mode="video">MP4</button>')
+PAGE = PAGE.replace("(gif?'<button class=\"choice\" data-mode=\"gif\">.gif format</button>':'')", "(gif?'<button class=\"choice\" data-mode=\"gif\">GIF</button>':'')+'<button class=\"choice\" data-mode=\"audio\">MP3</button>'")
+PAGE = PAGE.replace("(d.thumbnail?`<img src=\"${esc(d.thumbnail)}\" alt=\"Video thumbnail\">`:''));document.querySelectorAll", "(d.thumbnail?`<img src=\"${esc(d.thumbnail)}\" alt=\"Video thumbnail\">`:'')+'</section>');document.querySelectorAll")
+PAGE = PAGE.replace("url.value=(await navigator.clipboard.readText()).trim();updateAction();if(url.value)message.textContent='Link pasted. Click Confirm.'", "let clip=await fetch('/api/clipboard').then(x=>x.json());url.value=(clip.text||'').trim();updateAction();if(!url.value)showError('CLIP001','The clipboard is empty or its contents cannot be read.')")
+PAGE = PAGE.replace('</body>', '''<script>
+(() => {
+  const input = document.getElementById('url');
+  const button = document.getElementById('action');
+  const output = document.getElementById('preview');
+  const fail = (code, text) => {
+    const dialog = document.getElementById('errorDialog');
+    const details = document.getElementById('errorText');
+    details.value = `${code} — ${text}`; dialog.showModal(); details.select();
+  };
+  const update = () => { button.disabled = false; button.textContent = input.value.trim() ? 'Confirm' : 'Paste link'; };
+  const download = async (mode, title) => {
+    button.disabled = true; button.textContent = '…';
+    const response = await fetch('/api/download', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({url:input.value.trim(),mode,title})});
+    const data = await response.json(); update(); if (!response.ok) fail(data.code || 'API400', data.error || 'Download could not start.');
+  };
+  const formats = async () => {
+    button.disabled = true; button.innerHTML = '<span class="spinner"></span>';
+    const response = await fetch('/api/preview', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({url:input.value.trim()})});
+    const data = await response.json(); update();
+    if (!response.ok) { fail(data.code || 'API400', data.error || 'Could not inspect this link.'); return; }
+    const gif = data.seconds <= 30;
+    output.innerHTML = '<section class="format-options"><span>Choose a format to download:</span><button class="choice" data-mode="video">MP4</button>' + (gif ? '<button class="choice" data-mode="gif">GIF</button>' : '') + '<button class="choice" data-mode="audio">MP3</button>' + (data.media_url ? `<video controls preload="metadata" src="${data.media_url}"></video>` : '') + '</section>';
+    output.querySelectorAll('.choice').forEach(choice => choice.onclick = () => download(choice.dataset.mode, data.title));
+  };
+  button.type = 'button';
+  button.onclick = async () => {
+    if (input.value.trim()) { await formats(); return; }
+    button.disabled = true; button.innerHTML = '<span class="spinner"></span>';
+    try { const data = await fetch('/api/clipboard').then(r => r.json()); input.value = (data.text || '').trim(); }
+    catch { fail('CLIP001', 'The Windows clipboard could not be read.'); }
+    update();
+  };
+  input.addEventListener('input', () => { output.innerHTML = ''; update(); });
+  update();
+})();
+</script></body>''')
 
 class Handler(BaseHTTPRequestHandler):
     def send_json(self, value: object, status: int=200) -> None:
@@ -135,6 +192,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         if self.path=="/api/status":
             with LOCK: self.send_json({"jobs":list(reversed(JOBS))})
+            return
+        if self.path=="/api/clipboard":
+            self.send_json({"text": clipboard_text()})
             return
         if self.path.startswith("/api/stream/"):
             item = PREVIEWS.get(self.path.rsplit("/", 1)[-1])
@@ -162,7 +222,7 @@ class Handler(BaseHTTPRequestHandler):
             if self.path=="/api/preview": self.send_json(preview(url)); return
             if self.path!="/api/download": self.send_json({"error":"Not found"},404); return
             mode=str(data.get("mode","video"))
-            if mode not in {"video","gif"}: raise ValueError("Unknown download format.")
+            if mode not in {"video","gif","audio"}: raise ValueError("Unknown download format.")
             path=choose_path(str(data.get("title","download")),mode)
             job={"url":url,"mode":mode,"path":path,"status":"downloading","log":""}
             with LOCK: JOBS.append(job)
