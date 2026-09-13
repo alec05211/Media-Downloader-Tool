@@ -2,3 +2,9 @@
 diagnostics/resolution.jsonl
 __pycache__/
 *.pyc
+
+# PyInstaller build products are regenerated from build.ps1 and are too large
+# for source control. Distribute application.exe through a release instead.
+/build/
+/dist/
+/application.spec
