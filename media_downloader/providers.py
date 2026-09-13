@@ -3,8 +3,6 @@ from __future__ import annotations
 import html
 import json
 import re
-import subprocess
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
@@ -37,18 +35,13 @@ class YtDlpStrategy:
     name: str = "yt-dlp"
 
     def resolve(self, url: str) -> MediaCandidate:
-        command = [sys.executable, "-m", "yt_dlp", "--no-playlist", "--no-warnings", "-J", "-f", "best[ext=mp4]", url]
         try:
-            run = subprocess.run(command, cwd=self.root, capture_output=True, text=True, encoding="utf-8",
-                                 errors="replace", timeout=45)
-        except subprocess.TimeoutExpired as exc:
-            raise ResolutionError("Timed out while inspecting the source.") from exc
-        if run.returncode:
-            raise ResolutionError(run.stderr.strip() or "The source could not be processed.")
-        try:
-            info = json.loads(run.stdout)
-        except json.JSONDecodeError as exc:
-            raise ResolutionError("yt-dlp returned invalid metadata.") from exc
+            from yt_dlp import YoutubeDL
+            with YoutubeDL({"noplaylist": True, "no_warnings": True, "quiet": True,
+                            "format": "best[ext=mp4]"}) as downloader:
+                info = downloader.extract_info(url, download=False)
+        except Exception as exc:
+            raise ResolutionError(str(exc) or "The source could not be processed.") from exc
         width, height = info.get("width"), info.get("height")
         return MediaCandidate(title=str(info.get("title") or "download"), kind="video",
                               source_url=str(info.get("url") or ""), thumbnail_url=str(info.get("thumbnail") or ""),

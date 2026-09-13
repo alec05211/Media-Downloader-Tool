@@ -10,9 +10,13 @@ from media_downloader.diagnostics import record_download_failure, record_resolut
 from media_downloader.pipeline import ProviderAdapter, resolve
 from media_downloader.providers import RedditProvider, YtDlpProvider
 
-ROOT = Path(__file__).parent
-DOWNLOADS = ROOT / "downloads"; DOWNLOADS.mkdir(exist_ok=True)
-LAST_SAVE_FOLDER = ROOT / ".last_save_folder"
+# In a PyInstaller one-file build, the program files are unpacked to a temporary
+# directory. Keep user data outside that directory so it survives app restarts.
+ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).parent))
+APP_DATA = Path.home() / "AppData" / "Local" / "Media Downloader"
+APP_DATA.mkdir(parents=True, exist_ok=True)
+DOWNLOADS = APP_DATA / "downloads"; DOWNLOADS.mkdir(exist_ok=True)
+LAST_SAVE_FOLDER = APP_DATA / ".last_save_folder"
 PREVIEWS: dict[str, dict[str, object]] = {}
 DIRECT_MEDIA: dict[str, str] = {}
 RESOLUTION_STRATEGIES: dict[str, str] = {}
@@ -118,12 +122,25 @@ def download(job: dict[str,str], provider: ProviderAdapter) -> None:
             return
         ffmpeg = ffmpeg_binary()
         if job["mode"] in {"gif", "audio"} and not ffmpeg: raise RuntimeError("Conversion runtime is missing. Run start.bat again, then retry.")
+        from yt_dlp import YoutubeDL
+
+        class DownloadLogger:
+            def __init__(self) -> None: self.messages: list[str] = []
+            def debug(self, message: str) -> None: self.messages.append(message)
+            def warning(self, message: str) -> None: self.messages.append(f"WARNING: {message}")
+            def error(self, message: str) -> None: self.messages.append(f"ERROR: {message}")
+
         output_template = str(Path(job["path"]).with_suffix("")) + ".%(ext)s"
-        command = [sys.executable, "-m", "yt_dlp", "--no-playlist", "--newline", "-f", "best[ext=mp4]", "-o", output_template]
-        if ffmpeg: command += ["--ffmpeg-location", ffmpeg]
-        process = subprocess.Popen(command + [job["url"]], cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
-        output,_ = process.communicate()
-        if process.returncode == 0 and job["mode"] in {"gif", "audio"}:
+        logger = DownloadLogger()
+        options: dict[str, object] = {"noplaylist": True, "no_warnings": True, "quiet": True,
+                                      "format": "best[ext=mp4]", "outtmpl": output_template,
+                                      "logger": logger}
+        if ffmpeg: options["ffmpeg_location"] = ffmpeg
+        with YoutubeDL(options) as downloader:
+            result = downloader.download([job["url"]])
+        output = "\n".join(logger.messages)
+        returncode = int(result or 0)
+        if returncode == 0 and job["mode"] in {"gif", "audio"}:
             intermediate = str(Path(job["path"]).with_suffix(".mp4"))
             conversion_args = ([ffmpeg, "-y", "-i", intermediate, "-vf", "fps=12,scale=640:-1:flags=lanczos", job["path"]]
                                if job["mode"] == "gif" else [ffmpeg, "-y", "-i", intermediate, "-vn", "-codec:a", "libmp3lame", "-q:a", "2", job["path"]])
@@ -135,8 +152,8 @@ def download(job: dict[str,str], provider: ProviderAdapter) -> None:
             if conversion.returncode == 0:
                 Path(intermediate).unlink(missing_ok=True)
             else:
-                process.returncode = conversion.returncode
-        job["log"] = output[-4000:]; job["status"] = "complete" if process.returncode == 0 else "failed"
+                returncode = conversion.returncode
+        job["log"] = output[-4000:]; job["status"] = "complete" if returncode == 0 else "failed"
         if job["status"] == "failed":
             record_download_failure(ROOT, job["url"], provider.name, job.get("strategy", "download"), output)
             job["code"], job["error"] = classify_failure(output)
