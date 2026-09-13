@@ -10,7 +10,7 @@ Preview-resolution traces are written locally to `diagnostics/resolution.jsonl`.
 
 ## Run it
 
-Double-click `start.bat`, or run:
+For the normal console-based launcher, double-click `start.bat`, or run:
 
 ```powershell
 py -m pip install -r requirements.txt
@@ -18,6 +18,35 @@ py app.py
 ```
 
 The app opens a fresh local browser page automatically, using an available port. Paste a link and click **Confirm**. The app presents an MP4 option labeled with its resolution; clips of 30 seconds or less also receive a `.gif format` option. Selecting a format immediately opens Windows' **Save As** dialog, where you choose the exact filename and destination. The app remembers that destination for the next Save As dialog. Cancelling uses a random filename directly in the last selected folder—no source-named folders are created. The included runtime dependency provides GIF conversion automatically.
+
+## Windows application package
+
+Run `powershell -ExecutionPolicy Bypass -File build.ps1` to produce
+`dist/application.exe`. This is a no-console local application: it bundles its
+Python runtime and all current dependencies, then opens the browser UI itself.
+It does not require Python, `start.bat`, or an internet connection on the
+machine where it is launched.
+
+After changing application code or `requirements.txt`, rebuild the executable
+with:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File build.ps1
+```
+
+This replaces `dist/application.exe`. Run the installer again (or replace the
+installed executable) to update the Start-menu and desktop-shortcut version.
+
+For normal Windows installation, compile `installer.iss` using Inno Setup 6
+after building. The installer creates a Start-menu entry and offers an optional
+desktop shortcut. When a dependency changes, rebuild and distribute a new
+`application.exe` (and installer); the program intentionally does not download
+and execute new packages at startup.
+
+As a lightweight installer with no additional tooling, distribute the two files
+in `dist` together and run `install.ps1` once. It copies `application.exe` to
+the current user's local app folder, creates a Start-menu shortcut, and creates
+a desktop shortcut unless invoked with `-NoDesktopShortcut`.
 
 ## Boundaries
 
