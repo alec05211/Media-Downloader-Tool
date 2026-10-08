@@ -8,3 +8,6 @@ __pycache__/
 /build/
 /dist/
 /application.spec
+/Media Downloader.spec
+startup.log
+*.exe

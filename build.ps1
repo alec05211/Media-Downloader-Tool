@@ -18,6 +18,11 @@ py -m PyInstaller --noconfirm --clean --onefile --noconsole --name application `
   --collect-all imageio_ffmpeg `
   --collect-all yt_dlp `
   app.py
+Get-Process -Name "application", "Media Downloader" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Start-Sleep -Milliseconds 200
+Copy-Item -LiteralPath "$projectRoot\dist\application.exe" -Destination "$projectRoot\application.exe" -Force
 Copy-Item -LiteralPath "$projectRoot\install.ps1" -Destination "$projectRoot\dist\install.ps1" -Force
 
-Write-Host "Built: $projectRoot\dist\application.exe"
+Write-Host "Built root launcher: $projectRoot\application.exe"
+Write-Host "Built dist package:  $projectRoot\dist\application.exe"
+

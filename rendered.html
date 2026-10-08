@@ -1,37 +1,640 @@
-<!doctype html><html><head><meta charset="utf-8"><title>Media Downloader</title><style>body{font-family:system-ui,sans-serif;max-width:780px;margin:48px auto;background:#10131a;color:#eef2ff;padding:0 20px}.muted{color:#aab4cd}form{background:#1c2230;border:1px solid #2e3950;border-radius:10px;padding:18px;margin:20px 0}.entry{display:flex}.entry input{min-width:0;flex:1;box-sizing:border-box;padding:12px;border-radius:6px 0 0 6px;border:1px solid #4b5b7c;background:#111722;color:white;font-size:15px}.entry button{margin:0;border-radius:0 6px 6px 0;padding:10px 14px;background:#76a7ff;border:0;font-weight:700;cursor:pointer}.choice{margin:12px 8px 0 0;padding:10px 14px;background:#273650;color:white;border:0;border-radius:6px;font-weight:700;cursor:pointer}video,#preview img{display:block;max-width:100%;max-height:380px;border-radius:8px;margin-top:14px}footer{font-size:13px;color:#aab4cd}.entry button:disabled{background:#526174;cursor:wait}.spinner{display:inline-block;width:13px;height:13px;border:2px solid #cbd5e1;border-right-color:transparent;border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle}@keyframes spin{to{transform:rotate(360deg)}}dialog{max-width:680px;width:calc(100% - 40px);background:#1c2230;color:#eef2ff;border:1px solid #4b5b7c;border-radius:10px;padding:20px}dialog::backdrop{background:#0009}dialog textarea{width:100%;height:210px;box-sizing:border-box;background:#111722;color:#eef2ff;border:1px solid #4b5b7c;border-radius:6px;padding:10px;resize:vertical}dialog button{margin:12px 8px 0 0;padding:8px 12px;border:0;border-radius:6px;background:#76a7ff;font-weight:700;cursor:pointer}.format-options{display:flex;justify-content:center;align-items:center;flex-wrap:wrap;gap:8px;margin:18px auto}.format-options .choice{margin:0}</style></head><body><h1>Media Downloader</h1><form id="form"><div class="entry"><input id="url" type="url" placeholder="Paste a YouTube, TikTok, Instagram, X, or Reddit link" required><button id="action">Paste link</button></div><span id="message" hidden></span><div id="preview"></div><dialog id="errorDialog"><textarea id="errorText" readonly aria-label="Error details"></textarea><button type="button" onclick="copyError()">Copy details</button><button type="button" onclick="errorDialog.close()">Close</button></dialog></form><script>const form=document.getElementById('form'),url=document.getElementById('url'),action=document.getElementById('action'),message=document.getElementById('message'),preview=document.getElementById('preview'),errorDialog=document.getElementById('errorDialog'),errorText=document.getElementById('errorText');let active='';function showError(code,text,raw=''){errorText.value=code+' — '+text+(raw?'\n\nDiagnostic: '+raw:'');errorDialog.showModal();errorText.focus();errorText.select()}async function copyError(){try{await navigator.clipboard.writeText(errorText.value)}catch{errorText.select();document.execCommand('copy')}}function clearError(){}function setLoading(loading){action.disabled=loading;action.innerHTML=loading?'<span class="spinner"></span>':(url.value.trim()?'Confirm':'Paste link')}const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));function updateAction(){action.textContent=url.value.trim()?'Confirm':'Paste link'}async function choose(){setLoading(true);message.textContent='Checking available formats…';preview.innerHTML='';let r=await fetch('/api/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:url.value})}),d=await r.json();if(!r.ok){showError(d.code||'API400',d.error);setLoading(false);return}let gif=d.seconds<=30;preview.innerHTML=`<section class="format-options"><span>Choose a format to download:</span><button class="choice" data-mode="video">MP4</button>`+(gif?'<button class="choice" data-mode="gif">GIF</button>':'')+'<button class="choice" data-mode="audio">MP3</button>'+(d.media_url?`<video controls preload="metadata" poster="${esc(d.thumbnail)}"><source src="${esc(d.media_url)}"></video>`:(d.thumbnail?`<img src="${esc(d.thumbnail)}" alt="Video thumbnail">`:'')+'</section>');document.querySelectorAll('.choice').forEach(b=>b.onclick=()=>start(b.dataset.mode,d.title));message.textContent=gif?'Select MP4 or GIF to download.':'Select MP4 to download. GIF is available for clips up to 30 seconds.';setLoading(false)}async function start(mode,title){active=url.value;message.textContent='Choose an exact file name and save location…';let r=await fetch('/api/download',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:active,mode,title})}),d=await r.json();if(!r.ok)showError(d.code||'API400',d.error)}async function status(){if(!active)return;let d=await fetch('/api/status').then(r=>r.json()),j=d.jobs.find(x=>x.url===active);if(!j)return;if(j.status==='complete'){active=''}if(j.status==='failed'){showError(j.code||'DL999',j.error||'Download failed.',j.log);active=''}}form.onsubmit=async e=>{e.preventDefault();if(url.value.trim())choose();else{try{let clip=await fetch('/api/clipboard').then(x=>x.json());url.value=(clip.text||'').trim();updateAction();if(!url.value)showError('CLIP001','The clipboard is empty or its contents cannot be read.')}catch{message.textContent='Clipboard access was not allowed. Paste a link into the field.'}}};url.oninput=()=>{preview.innerHTML='';clearError();updateAction()};setInterval(status,1500)</script><script>
-(() => {
-  const input = document.getElementById('url');
-  const button = document.getElementById('action');
-  const output = document.getElementById('preview');
-  const fail = (code, text) => {
-    const dialog = document.getElementById('errorDialog');
-    const details = document.getElementById('errorText');
-    details.value = `${code} — ${text}`; dialog.showModal(); details.select();
-  };
-  const update = () => { button.disabled = false; button.textContent = input.value.trim() ? 'Confirm' : 'Paste link'; };
-  const download = async (mode, title) => {
-    button.disabled = true; button.textContent = '…';
-    const response = await fetch('/api/download', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({url:input.value.trim(),mode,title})});
-    const data = await response.json(); update(); if (!response.ok) fail(data.code || 'API400', data.error || 'Download could not start.');
-  };
-  const formats = async () => {
-    button.disabled = true; button.innerHTML = '<span class="spinner"></span>';
-    const response = await fetch('/api/preview', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({url:input.value.trim()})});
-    const data = await response.json(); update();
-    if (!response.ok) { fail(data.code || 'API400', data.error || 'Could not inspect this link.'); return; }
-    const gif = data.seconds <= 30;
-    output.innerHTML = '<section class="format-options"><span>Choose a format to download:</span><button class="choice" data-mode="video">MP4</button>' + (gif ? '<button class="choice" data-mode="gif">GIF</button>' : '') + '<button class="choice" data-mode="audio">MP3</button>' + (data.media_url ? `<video controls preload="metadata" src="${data.media_url}"></video>` : '') + '</section>';
-    output.querySelectorAll('.choice').forEach(choice => choice.onclick = () => download(choice.dataset.mode, data.title));
-  };
-  button.type = 'button';
-  button.onclick = async () => {
-    if (input.value.trim()) { await formats(); return; }
-    button.disabled = true; button.innerHTML = '<span class="spinner"></span>';
-    try { const data = await fetch('/api/clipboard').then(r => r.json()); input.value = (data.text || '').trim(); }
-    catch { fail('CLIP001', 'The Windows clipboard could not be read.'); }
+<!doctype html><html><head><meta charset="utf-8"><title>Media Downloader</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23152848'/%3E%3Cpath d='M16 6v14m-6-6 6 6 6-6M8 23v3h16v-3' fill='none' stroke='%2387cefa' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<style>
+body{font-family:system-ui,sans-serif;max-width:780px;margin:48px auto;background:#10131a;color:#eef2ff;padding:0 20px}
+h1{margin-bottom:20px}
+form{background:#1c2230;border:1px solid #2e3950;border-radius:10px;padding:18px;margin:20px 0}
+.entry{display:flex}
+.entry input{min-width:0;flex:1;box-sizing:border-box;padding:12px;border-radius:6px 0 0 6px;border:1px solid #4b5b7c;background:#111722;color:#fff;font-size:15px}
+.entry input:focus,.entry input:focus-visible{outline:none !important;box-shadow:none !important;border-color:#4b5b7c !important}
+.entry button{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-width:52px;border:0;font-weight:700;cursor:pointer;margin:0;border-radius:0 6px 6px 0;padding:10px 18px;background:#76a7ff;color:#10131a;font-size:14px;transition:background .15s ease,color .15s ease,min-width .15s ease}
+.entry button svg{display:block;pointer-events:none}
+.entry button:focus,.entry button:focus-visible{outline:none !important;box-shadow:none !important}
+.entry button:disabled{background:#526174;cursor:wait;color:#cbd5e1}
+
+/* Format Pills */
+.format-options{display:flex;justify-content:center;align-items:center;flex-wrap:wrap;gap:10px;margin:18px auto}
+.format-label{font-size:13px;font-weight:600;color:#aab4cd}
+.format-pills{display:inline-flex;background:#111722;border:1px solid #2e3950;border-radius:6px;padding:3px;gap:4px}
+.format-pill{border:0;background:transparent;color:#8c9cb8;font-weight:700;font-size:13px;padding:7px 14px;border-radius:4px;cursor:pointer;transition:all .15s ease}
+.format-pill:hover{color:#fff}
+.format-pill.active{background:#76a7ff;color:#10131a;box-shadow:0 1px 3px rgba(0,0,0,0.3)}
+
+/* Quick Save Section */
+.quick-save-section{margin-top:18px;background:#141a25;border:1px solid #2d384d;border-radius:8px;padding:14px 16px}
+.quick-save-header{display:flex;align-items:center;justify-content:flex-end;margin-bottom:14px}
+.toggle-group{display:inline-flex;background:#0d1117;border:1px solid #2e3950;border-radius:6px;padding:2px}
+.toggle-btn{background:transparent;border:0;color:#8c9cb8;font-size:12px;font-weight:600;padding:5px 14px;border-radius:4px;cursor:pointer;transition:all .15s ease}
+.toggle-btn:hover{color:#fff}
+.toggle-btn.active{background:#273650;color:#76a7ff;box-shadow:0 1px 3px rgba(0,0,0,0.3)}
+
+.folder-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+@media (max-width:640px){.folder-grid{grid-template-columns:repeat(2,1fr)}}
+@media (max-width:440px){.folder-grid{grid-template-columns:1fr}}
+
+.folder-chip{position:relative;display:flex;align-items:center;gap:10px;background:#1a2232;border:1px solid #2d3b54;border-radius:8px;padding:10px 12px;cursor:pointer;text-align:left;transition:all .15s ease;user-select:none;color:#eef2ff;font:inherit;box-sizing:border-box;min-height:54px;overflow:hidden}
+.folder-chip:hover{background:#232f45;border-color:#76a7ff;transform:translateY(-1px)}
+.folder-chip.saving{border-color:#76a7ff;background:#202b3e;pointer-events:none}
+.folder-chip.saving .folder-text{padding-right:36px}
+.folder-icon{font-size:18px;line-height:1;flex-shrink:0}
+.folder-text{min-width:0;flex:1;display:flex;flex-direction:column;gap:2px}
+.folder-name{font-weight:600;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.folder-sub{font-size:10px;color:#8c9cb8;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;direction:rtl;text-align:left}
+.folder-sub bdi{direction:ltr;unicode-bidi:isolate}
+
+/* 9th button: Custom */
+.folder-chip.custom-folder-chip{background:#25334c;border-color:#3e537a}
+.folder-chip.custom-folder-chip:hover{background:#2f405f;border-color:#9cbaff}
+
+/* Folder Chip In-Button HUD (centered on the right side with blur) */
+.chip-hud{position:absolute;right:10px;top:50%;transform:translateY(-50%) scale(0.75);width:34px;height:34px;border-radius:50%;background:rgba(18,24,38,0.82);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border:1px solid rgba(255,255,255,0.16);box-shadow:0 4px 14px rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center;opacity:0;pointer-events:none;z-index:2;transition:opacity .22s cubic-bezier(0.16,1,0.3,1),transform .22s cubic-bezier(0.16,1,0.3,1),border-color .25s ease,box-shadow .25s ease}
+.chip-hud.visible{opacity:1;transform:translateY(-50%) scale(1)}
+.chip-hud.success{border-color:rgba(34,197,94,0.5);box-shadow:0 4px 16px rgba(0,0,0,0.45),0 0 16px rgba(34,197,94,0.4);animation:chipHudPop .4s cubic-bezier(0.175,0.885,0.32,1.275)}
+@keyframes chipHudPop{0%{transform:translateY(-50%) scale(0.85)}50%{transform:translateY(-50%) scale(1.1)}100%{transform:translateY(-50%) scale(1)}}
+
+/* Chip HUD Spinner */
+.chip-spinner{display:block;animation:chipSpin .9s linear infinite;transform-origin:center}
+.chip-spinner-arc{stroke-dasharray:55;stroke-dashoffset:15;animation:chipDash 1.2s ease-in-out infinite alternate}
+@keyframes chipSpin{100%{transform:rotate(360deg)}}
+@keyframes chipDash{0%{stroke-dashoffset:45}100%{stroke-dashoffset:10}}
+
+/* Chip HUD Checkmark */
+.chip-check-icon{display:block}
+.chip-check-circle{animation:chipCircleGrow .3s cubic-bezier(0.16,1,0.3,1) forwards;transform-origin:center}
+.chip-check-path{stroke-dasharray:24;stroke-dashoffset:24;animation:chipDrawCheck .38s .1s cubic-bezier(0.16,1,0.3,1) forwards}
+@keyframes chipCircleGrow{0%{transform:scale(0.5);opacity:0}100%{transform:scale(1);opacity:1}}
+@keyframes chipDrawCheck{0%{stroke-dashoffset:24}100%{stroke-dashoffset:0}}
+
+/* Media Preview Expansion/Collapse Animation */
+.preview-container {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  margin: 0;
+  padding: 0;
+  transition: grid-template-rows 0.44s cubic-bezier(0.16, 1, 0.3, 1),
+              opacity 0.32s cubic-bezier(0.16, 1, 0.3, 1);
+  will-change: grid-template-rows, opacity;
+}
+.preview-container.expanded {
+  grid-template-rows: 1fr;
+  opacity: 1;
+  transition: grid-template-rows 0.48s cubic-bezier(0.16, 1, 0.3, 1),
+              opacity 0.38s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.preview-content {
+  min-height: 0;
+  overflow: hidden;
+  transform: translateY(-8px);
+  transition: transform 0.40s cubic-bezier(0.16, 1, 0.3, 1);
+  will-change: transform;
+}
+.preview-container.expanded .preview-content {
+  transform: translateY(0);
+  transition: transform 0.48s cubic-bezier(0.16, 1, 0.3, 1);
+}
+@media (prefers-reduced-motion: reduce) {
+  .preview-container, .preview-content {
+    transition: none !important;
+  }
+}
+.media-preview{display:block;clear:both}
+.media-preview video,.media-preview img{display:block;max-width:100%;max-height:380px;border-radius:8px;margin:14px auto 0;background:#0d121c}
+.spinner{display:inline-block;width:13px;height:13px;border:2px solid #cbd5e1;border-right-color:transparent;border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* Error Dialog */
+dialog{position:relative;max-width:680px;width:calc(100% - 40px);background:#1c2230;color:#eef2ff;border:1px solid #4b5b7c;border-radius:10px;padding:20px}
+dialog::backdrop{background:#0009}
+.dialog-controls{position:absolute;top:10px;right:10px;display:flex;align-items:center;gap:8px}
+.icon-button{display:grid;place-items:center;width:36px;height:36px;padding:0;border:0;border-radius:6px;background:#273650;color:#eef2ff;cursor:pointer}
+.close-button{background:transparent;font-size:24px;line-height:1}
+#errorText{margin:8px 160px 0 0;white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;color:inherit}
+.copy-status{color:#aab4cd;font-size:13px}
+</style></head><body><h1>Media Downloader</h1><form id="form" autocomplete="off" onsubmit="event.preventDefault()">
+<div class="entry"><input id="url" type="text" placeholder="Paste a YouTube, TikTok, Instagram, X, or Reddit link" required autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true"><button id="action" type="button" aria-label="Paste link from clipboard and load preview" title="Paste link from clipboard and load preview"></button></div>
+
+<div id="preview" class="preview-container"><div id="previewContent" class="preview-content"></div></div>
+
+<section class="quick-save-section" id="quickSaveSection">
+  <div class="quick-save-header">
+    <div class="toggle-group" role="tablist" aria-label="Folder sorting">
+      <button type="button" id="toggleFrequent" class="toggle-btn active" title="Show top 8 most frequent save folders">Most Frequent</button>
+      <button type="button" id="toggleRecent" class="toggle-btn" title="Show top 8 most recent save folders">Recent</button>
+    </div>
+  </div>
+  <div id="folderList" class="folder-grid"></div>
+</section>
+
+<dialog id="errorDialog" aria-labelledby="errorText">
+  <div class="dialog-controls">
+    <span class="copy-status" id="copyStatus" role="status" hidden>Copied</span>
+    <button class="icon-button" id="copyError" type="button" aria-label="Copy error details" title="Copy error details">
+      <svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="11" height="11" rx="1"></rect><path d="M15 9V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h4"></path></svg>
+    </button>
+    <button class="icon-button close-button" id="closeError" type="button" aria-label="Close error dialog">×</button>
+  </div>
+  <pre id="errorText"></pre>
+</dialog>
+</form>
+
+<script>
+const input = document.getElementById('url'),
+      button = document.getElementById('action'),
+      output = document.getElementById('preview'),
+      previewContent = document.getElementById('previewContent'),
+      dialog = document.getElementById('errorDialog'),
+      errorText = document.getElementById('errorText'),
+      copyStatus = document.getElementById('copyStatus'),
+      folderList = document.getElementById('folderList'),
+      toggleFrequent = document.getElementById('toggleFrequent'),
+      toggleRecent = document.getElementById('toggleRecent');
+
+let selectedUrl = '',
+    previewData = null,
+    currentMode = 'video',
+    folderSortMode = localStorage.getItem('mdt_folder_sort') || 'frequent',
+    foldersData = { frequent: [], recent: [] },
+    activeJobUrl = '',
+    pollTimer = null,
+    activeChipElement = null,
+    chipHudTimer = null,
+    collapseAnimTimer = null,
+    copyStatusTimer = null;
+
+const esc = value => String(value).replace(/[&<>"]/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[char]));
+
+const PASTE_ICON_SVG = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"></path><rect x="8" y="2" width="8" height="4" rx="1" ry="1"></rect></svg>';
+
+function update() {
+  button.disabled = false;
+  if (input.value.trim()) {
+    button.textContent = 'Confirm';
+    button.title = 'Confirm link';
+    button.setAttribute('aria-label', 'Confirm link');
+  } else {
+    button.innerHTML = PASTE_ICON_SVG;
+    button.title = 'Paste link from clipboard and load preview';
+    button.setAttribute('aria-label', 'Paste link from clipboard and load preview');
+  }
+}
+
+function setBusy() {
+  button.disabled = true;
+  button.innerHTML = '<span class="spinner"></span>';
+}
+
+function showError(code, text, raw = '') {
+  errorText.textContent = code + ' — ' + text + (raw ? '\n\nDiagnostic: ' + raw : '');
+  dialog.showModal();
+}
+
+function setChipLoading(chipElement) {
+  clearTimeout(chipHudTimer);
+  if (activeChipElement && activeChipElement !== chipElement) {
+    activeChipElement.classList.remove('saving');
+    const prevHud = activeChipElement.querySelector('.chip-hud');
+    if (prevHud) {
+      prevHud.className = 'chip-hud';
+      prevHud.innerHTML = '';
+    }
+  }
+  activeChipElement = chipElement;
+  if (!chipElement) return;
+  chipElement.classList.add('saving');
+  const hud = chipElement.querySelector('.chip-hud');
+  if (!hud) return;
+  hud.className = 'chip-hud visible';
+  hud.innerHTML = `
+    <svg class="chip-spinner" viewBox="0 0 32 32" width="20" height="20">
+      <circle cx="16" cy="16" r="12" fill="none" stroke="rgba(255, 255, 255, 0.14)" stroke-width="2.5"/>
+      <circle class="chip-spinner-arc" cx="16" cy="16" r="12" fill="none" stroke="#76a7ff" stroke-width="2.5" stroke-linecap="round"/>
+    </svg>`;
+}
+
+function collapsePreview(immediate = false) {
+  clearTimeout(collapseAnimTimer);
+  selectedUrl = '';
+  previewData = null;
+  currentMode = 'video';
+  activeJobUrl = '';
+
+  const activeVideo = previewContent ? previewContent.querySelector('video') : null;
+  if (activeVideo) {
+    try { activeVideo.pause(); } catch (_) {}
+  }
+
+  if (immediate || !output || !output.classList.contains('expanded')) {
+    if (output) output.classList.remove('expanded');
+    if (previewContent) previewContent.innerHTML = '';
     update();
-  };
-  input.addEventListener('input', () => { output.innerHTML = ''; update(); });
+    return;
+  }
+
+  output.classList.remove('expanded');
   update();
-})();
+  collapseAnimTimer = setTimeout(() => {
+    if (output && !output.classList.contains('expanded')) {
+      if (previewContent) previewContent.innerHTML = '';
+    }
+  }, 440);
+}
+
+function setChipSuccess(chipElement) {
+  clearTimeout(chipHudTimer);
+  const target = chipElement || activeChipElement;
+  const hud = target ? target.querySelector('.chip-hud') : null;
+  if (target) target.classList.add('saving');
+  if (hud) {
+    hud.className = 'chip-hud visible success';
+    hud.innerHTML = `
+      <svg class="chip-check-icon" viewBox="0 0 32 32" width="22" height="22">
+        <circle class="chip-check-circle" cx="16" cy="16" r="13" fill="rgba(34, 197, 94, 0.18)" stroke="#22c55e" stroke-width="2"/>
+        <path class="chip-check-path" d="M10 16.5 L14.5 21 L22 12" fill="none" stroke="#22c55e" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>`;
+  }
+  chipHudTimer = setTimeout(async () => {
+    if (hud) {
+      hud.classList.remove('visible', 'success');
+      hud.innerHTML = '';
+    }
+    if (target) target.classList.remove('saving');
+    activeChipElement = null;
+    collapsePreview();
+    await loadFolders();
+  }, 1900);
+}
+
+function clearChipHud(chipElement) {
+  clearTimeout(chipHudTimer);
+  const target = chipElement || activeChipElement;
+  if (target) {
+    target.classList.remove('saving');
+    const hud = target.querySelector('.chip-hud');
+    if (hud) {
+      hud.classList.remove('visible', 'success');
+      hud.innerHTML = '';
+    }
+  }
+  activeChipElement = null;
+}
+
+async function copyError() {
+  let copied = false;
+  try {
+    await navigator.clipboard.writeText(errorText.textContent);
+    copied = true;
+  } catch {
+    const sel = getSelection(), rng = document.createRange();
+    rng.selectNodeContents(errorText);
+    sel.removeAllRanges();
+    sel.addRange(rng);
+    copied = document.execCommand('copy');
+    sel.removeAllRanges();
+  }
+  if (copied) {
+    copyStatus.hidden = false;
+    clearTimeout(copyStatusTimer);
+    copyStatusTimer = setTimeout(() => copyStatus.hidden = true, 900);
+  }
+}
+
+function renderFolders() {
+  const list = (foldersData[folderSortMode] || []).slice(0, 8);
+  folderList.innerHTML = '';
+  toggleFrequent.classList.toggle('active', folderSortMode === 'frequent');
+  toggleRecent.classList.toggle('active', folderSortMode === 'recent');
+
+  list.forEach(folder => {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'folder-chip';
+    chip.title = folder.path;
+
+    chip.innerHTML = `
+      <span class="folder-icon">📁</span>
+      <div class="folder-text">
+        <span class="folder-name">${esc(folder.name)}</span>
+        <span class="folder-sub"><bdi>${esc(folder.path)}</bdi></span>
+      </div>
+      <div class="chip-hud"></div>
+    `;
+
+    chip.onclick = () => {
+      handleFolderClick(folder.path, folder.name, chip);
+    };
+
+    folderList.appendChild(chip);
+  });
+
+  // 9th slot: Custom
+  const customChip = document.createElement('button');
+  customChip.type = 'button';
+  customChip.className = 'folder-chip custom-folder-chip';
+  customChip.title = 'Choose a custom folder and file name using Windows file dialog';
+  customChip.innerHTML = `
+    <span class="folder-icon">📁</span>
+    <div class="folder-text">
+      <span class="folder-name">Custom</span>
+    </div>
+    <div class="chip-hud"></div>
+  `;
+  customChip.onclick = () => {
+    saveToCustomFolder(customChip);
+  };
+  folderList.appendChild(customChip);
+}
+
+function setFolderSort(mode) {
+  folderSortMode = mode;
+  localStorage.setItem('mdt_folder_sort', mode);
+  renderFolders();
+}
+toggleFrequent.onclick = () => setFolderSort('frequent');
+toggleRecent.onclick = () => setFolderSort('recent');
+
+async function loadFolders() {
+  try {
+    const res = await fetch('/api/folders');
+    if (res.ok) {
+      foldersData = await res.json();
+      renderFolders();
+    }
+  } catch (_) {}
+}
+
+function renderPreview(data) {
+  clearTimeout(collapseAnimTimer);
+  const redditGif = data.fallback === 'reddit_gif';
+  const canGif = data.seconds <= 30;
+
+  let formatOptionsHtml = '';
+  if (redditGif) {
+    currentMode = 'gif';
+    formatOptionsHtml = `
+      <section class="format-options">
+        <span class="format-label">Source Format:</span>
+        <div class="format-pills">
+          <button type="button" class="format-pill active" data-mode="gif">Reddit GIF</button>
+        </div>
+      </section>`;
+  } else {
+    formatOptionsHtml = `
+      <section class="format-options">
+        <span class="format-label">Select Format:</span>
+        <div class="format-pills">
+          <button type="button" class="format-pill ${currentMode === 'video' ? 'active' : ''}" data-mode="video">MP4 Video</button>
+          ${canGif ? `<button type="button" class="format-pill ${currentMode === 'gif' ? 'active' : ''}" data-mode="gif">GIF Image</button>` : ''}
+          <button type="button" class="format-pill ${currentMode === 'audio' ? 'active' : ''}" data-mode="audio">MP3 Audio</button>
+        </div>
+      </section>`;
+  }
+
+  const media = redditGif
+    ? (data.thumbnail ? `<img src="${esc(data.thumbnail)}" alt="Reddit GIF preview">` : '')
+    : (data.media_url ? `<video controls preload="metadata" src="${esc(data.media_url)}"></video>` : '');
+
+  previewContent.innerHTML = formatOptionsHtml + (media ? `<div class="media-preview">${media}</div>` : '');
+
+  previewContent.querySelectorAll('.format-pill').forEach(pill => {
+    pill.onclick = () => {
+      previewContent.querySelectorAll('.format-pill').forEach(p => p.classList.remove('active'));
+      pill.classList.add('active');
+      currentMode = pill.dataset.mode;
+    };
+  });
+
+  output.offsetHeight;
+  requestAnimationFrame(() => {
+    output.classList.add('expanded');
+  });
+}
+
+async function chooseFormats() {
+  const candidate = input.value.trim();
+  if (!candidate) return;
+  setBusy();
+  if (output && output.classList.contains('expanded')) {
+    collapsePreview();
+  }
+  try {
+    const response = await fetch('/api/preview', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({url: candidate})
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      showError(data.code || 'API400', data.error || 'Could not inspect this link.');
+      return;
+    }
+    selectedUrl = candidate;
+    previewData = data;
+    currentMode = data.fallback === 'reddit_gif' ? 'gif' : 'video';
+    input.value = '';
+    update();
+    renderPreview(data);
+  } catch (_) {
+    showError('NET001', 'The downloader could not be reached.');
+  } finally {
+    update();
+  }
+}
+
+async function performDownload(mode, title, folderPath = null, chipElement = null) {
+  setChipLoading(chipElement);
+  setBusy();
+
+  try {
+    const payload = {url: selectedUrl, mode, title};
+    if (folderPath) payload.folder = folderPath;
+
+    const response = await fetch('/api/download', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload)
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      clearChipHud(chipElement);
+      if (data.error !== 'Save cancelled.') {
+        showError(data.code || 'API400', data.error || 'Download could not start.');
+      }
+      return;
+    }
+
+    activeJobUrl = selectedUrl;
+    startStatusPolling(chipElement);
+  } catch (_) {
+    clearChipHud(chipElement);
+    showError('NET001', 'The downloader could not be reached.');
+  } finally {
+    update();
+  }
+}
+
+function startStatusPolling(chipElement) {
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = setInterval(async () => {
+    try {
+      const res = await fetch('/api/status');
+      const data = await res.json();
+      const job = data.jobs.find(j => j.url === activeJobUrl);
+      if (!job) return;
+
+      if (job.status === 'complete') {
+        clearInterval(pollTimer);
+        pollTimer = null;
+        setChipSuccess(chipElement);
+      } else if (job.status === 'failed') {
+        clearInterval(pollTimer);
+        pollTimer = null;
+        clearChipHud(chipElement);
+        showError(job.code || 'DL999', job.error || 'Download failed.', job.log);
+      }
+    } catch (_) {}
+  }, 1000);
+}
+
+async function handleFolderClick(folderPath, folderName, chipElement) {
+  let targetUrl = selectedUrl;
+  let targetTitle = previewData ? previewData.title : 'download';
+  let targetMode = currentMode;
+
+  setChipLoading(chipElement);
+
+  if (!targetUrl) {
+    const candidate = input.value.trim();
+    if (candidate) {
+      targetUrl = candidate;
+    } else {
+      try {
+        const clip = await fetch('/api/clipboard').then(r => r.json());
+        if (clip.text && /^https?:\/\//i.test(clip.text.trim())) {
+          targetUrl = clip.text.trim();
+          input.value = targetUrl;
+          update();
+        }
+      } catch (_) {}
+    }
+    if (!targetUrl) {
+      clearChipHud(chipElement);
+      input.focus();
+      return;
+    }
+
+    setBusy();
+    try {
+      const response = await fetch('/api/preview', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({url: targetUrl})
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        clearChipHud(chipElement);
+        showError(data.code || 'API400', data.error || 'Could not inspect this link.');
+        return;
+      }
+      selectedUrl = targetUrl;
+      previewData = data;
+      targetTitle = data.title;
+      targetMode = data.fallback === 'reddit_gif' ? 'gif' : 'video';
+      currentMode = targetMode;
+      input.value = '';
+      update();
+      renderPreview(data);
+    } catch (_) {
+      clearChipHud(chipElement);
+      showError('NET001', 'The downloader could not be reached.');
+      return;
+    } finally {
+      update();
+    }
+  }
+
+  await performDownload(targetMode, targetTitle, folderPath, chipElement);
+}
+
+async function saveToCustomFolder(chipElement = null) {
+  setChipLoading(chipElement);
+
+  if (!selectedUrl) {
+    const candidate = input.value.trim();
+    if (candidate) {
+      await chooseFormats();
+    } else {
+      try {
+        const clip = await fetch('/api/clipboard').then(r => r.json());
+        if (clip.text && /^https?:\/\//i.test(clip.text.trim())) {
+          input.value = clip.text.trim();
+          update();
+          await chooseFormats();
+        } else {
+          clearChipHud(chipElement);
+          input.focus();
+          return;
+        }
+      } catch (_) {
+        clearChipHud(chipElement);
+        input.focus();
+        return;
+      }
+    }
+    if (!selectedUrl) {
+      clearChipHud(chipElement);
+      return;
+    }
+  }
+  await performDownload(currentMode, previewData ? previewData.title : 'download', null, chipElement);
+}
+
+button.onclick = async () => {
+  const manual = input.value.trim();
+  if (manual) {
+    await chooseFormats();
+    return;
+  }
+  setBusy();
+  let text = '';
+  try {
+    const data = await fetch('/api/clipboard').then(r => r.json());
+    text = (data.text || '').trim();
+    if (!text) {
+      showError('CLIP001', 'The clipboard is empty or could not be read.');
+      update();
+      return;
+    }
+  } catch {
+    showError('CLIP001', 'The Windows clipboard could not be read.');
+    update();
+    return;
+  }
+
+  input.value = text;
+  await chooseFormats();
+};
+
+input.addEventListener('keydown', e => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    if (!button.disabled) button.click();
+  }
+});
+
+input.addEventListener('input', () => {
+  if (output && output.classList.contains('expanded')) {
+    collapsePreview();
+  } else {
+    selectedUrl = '';
+    previewData = null;
+  }
+  update();
+});
+
+document.getElementById('closeError').onclick = () => dialog.close();
+document.getElementById('copyError').onclick = copyError;
+
+update();
+loadFolders();
 </script></body></html>

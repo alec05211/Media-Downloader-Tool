@@ -6,7 +6,16 @@ param(
 $ErrorActionPreference = 'Stop'
 $source = Join-Path $PSScriptRoot 'application.exe'
 if (-not (Test-Path -LiteralPath $source)) {
-  throw 'application.exe must be in the same folder as install.ps1.'
+  $source = Join-Path $PSScriptRoot 'Media Downloader.exe'
+}
+if (-not (Test-Path -LiteralPath $source)) {
+  $source = Join-Path (Split-Path -Parent $PSScriptRoot) 'application.exe'
+}
+if (-not (Test-Path -LiteralPath $source)) {
+  $source = Join-Path (Split-Path -Parent $PSScriptRoot) 'Media Downloader.exe'
+}
+if (-not (Test-Path -LiteralPath $source)) {
+  throw 'application.exe must be present in the project directory.'
 }
 
 $appName = 'Media Downloader'
