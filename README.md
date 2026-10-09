@@ -4,7 +4,7 @@ A local browser app with separate adapter entries for YouTube, TikTok, Instagram
 
 ## Architecture
 
-Providers implement the same adapter interface and contribute an ordered set of public, no-login resolution strategies. The shared resolution pipeline records each strategy outcome, so adding or replacing a source method does not require changing the web handler. TikTok includes direct web-hydration metadata, public API fallback, and yt-dlp strategies. Reddit includes direct-GIF, yt-dlp, public JSON, legacy JSON, and public-page metadata strategies; the first successful strategy supplies the media candidate.
+Providers implement the same adapter interface and contribute an ordered set of public, no-login resolution strategies. The shared resolution pipeline records each strategy outcome, so adding or replacing a source method does not require changing the web handler. TikTok includes direct web-hydration metadata, public API fallback, and yt-dlp strategies. Reddit includes direct-GIF, modern Shreddit metadata (packaged MP4 and HLS streams), embed metadata, yt-dlp, and legacy JSON/page fallbacks; the first successful strategy supplies the media candidate.
 
 Preview-resolution traces are written locally to `diagnostics/resolution.jsonl`. Confirmed or user-reported method regressions belong in `diagnostics/method-failures.md`; the project-local `.codex/skills/media-downloader-diagnostics/SKILL.md` defines that maintenance workflow.
 

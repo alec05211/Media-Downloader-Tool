@@ -248,6 +248,27 @@ def preview(url: str) -> dict[str, object]:
 def download(job: dict[str,str], provider: ProviderAdapter) -> None:
     try:
         if direct_url := job.get("direct_url"):
+            ffmpeg = ffmpeg_binary()
+            target_path = Path(job["path"])
+            if job["mode"] == "video":
+                if not ffmpeg: raise RuntimeError("FFmpeg is required to convert GIF to MP4.")
+                temp_gif = target_path.with_suffix(".gif")
+                request = Request(direct_url, headers={"User-Agent": "Mozilla/5.0", "Referer": job["url"]})
+                try:
+                    with urlopen(request, timeout=45) as source, open(temp_gif, "wb") as destination:
+                        shutil.copyfileobj(source, destination)
+                except OSError as exc:
+                    raise RuntimeError(f"Direct GIF download failed: {exc}") from exc
+                conversion = subprocess.run([
+                    ffmpeg, "-y", "-i", str(temp_gif), "-movflags", "faststart",
+                    "-pix_fmt", "yuv420p", "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2", str(target_path)
+                ], capture_output=True, text=True, encoding="utf-8", errors="replace")
+                temp_gif.unlink(missing_ok=True)
+                if conversion.returncode != 0:
+                    raise RuntimeError(f"GIF to MP4 conversion failed: {conversion.stderr[-500:]}")
+                job["log"] = "Converted public Reddit GIF to MP4."
+                job["status"] = "complete"
+                return
             request = Request(direct_url, headers={"User-Agent": "Media-Downloader-Tool/1.0 (public GIF download)", "Referer": job["url"]})
             try:
                 with urlopen(request, timeout=45) as source, open(job["path"], "wb") as destination:
@@ -270,12 +291,24 @@ def download(job: dict[str,str], provider: ProviderAdapter) -> None:
                     headers = {}
             if not headers:
                 headers = {"User-Agent": "Mozilla/5.0", "Referer": job["url"]}
-            request = Request(direct_media_url, headers=headers)
-            try:
-                with urlopen(request, timeout=60) as source, open(download_target, "wb") as destination:
-                    shutil.copyfileobj(source, destination)
-            except OSError as exc:
-                raise RuntimeError(f"Direct media download failed: {exc}") from exc
+
+            is_manifest = ".m3u8" in direct_media_url.lower() or ".mpd" in direct_media_url.lower()
+            if is_manifest:
+                if not ffmpeg: raise RuntimeError("Conversion runtime is required for Reddit video streams.")
+                header_str = "".join(f"{k}: {v}\r\n" for k, v in headers.items())
+                cmd = [ffmpeg, "-y"]
+                if header_str: cmd.extend(["-headers", header_str])
+                cmd.extend(["-i", direct_media_url, "-c", "copy", str(download_target)])
+                res = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+                if res.returncode != 0:
+                    raise RuntimeError(f"FFmpeg stream download failed: {res.stderr[-500:]}")
+            else:
+                request = Request(direct_media_url, headers=headers)
+                try:
+                    with urlopen(request, timeout=60) as source, open(download_target, "wb") as destination:
+                        shutil.copyfileobj(source, destination)
+                except OSError as exc:
+                    raise RuntimeError(f"Direct media download failed: {exc}") from exc
             returncode = 0
             output = "Direct media stream downloaded successfully."
             if job["mode"] in {"gif", "audio"}:
@@ -1056,7 +1089,7 @@ class Handler(BaseHTTPRequestHandler):
             mode = str(data.get("mode", "video"))
             if mode not in {"video", "gif", "audio"}: raise ValueError("Unknown download format.")
             direct_url = DIRECT_MEDIA.get(url)
-            if direct_url and mode != "gif": raise ValueError("This Reddit post contains a GIF; choose Save GIF.")
+            if direct_url and mode == "audio": raise ValueError("GIFs do not contain audio; choose Save GIF or MP4.")
 
             folder = data.get("folder")
             if folder:

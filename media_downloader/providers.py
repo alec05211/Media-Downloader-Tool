@@ -131,11 +131,173 @@ class YtDlpProvider:
         return (YtDlpStrategy(self.root),)
 
 
+REDDIT_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/128.0.0.0 Safari/537.36"
+)
+REDDIT_HEADERS = {
+    "User-Agent": REDDIT_AGENT,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Referer": "https://www.reddit.com/",
+}
+
+
+@dataclass(frozen=True)
+class RedditShredditStrategy:
+    name: str = "reddit-shreddit"
+
+    def resolve(self, url: str) -> MediaCandidate:
+        req = Request(url, headers=REDDIT_HEADERS)
+        try:
+            with urlopen(req, timeout=20) as res:
+                page = res.read().decode("utf-8", "replace")
+        except OSError as exc:
+            raise ResolutionError(f"Reddit page request failed: {exc}") from exc
+
+        post_match = re.search(r'<shreddit-post\s+([^>]+)>', page)
+        player_match = re.search(r'<shreddit-player\s+([^>]+)>', page)
+
+        if not post_match and not player_match:
+            raise ResolutionError("No Shreddit metadata found on page.")
+
+        post_attrs = dict(re.findall(r'([a-z0-9_-]+)="([^"]*)"', post_match.group(1))) if post_match else {}
+        player_attrs = dict(re.findall(r'([a-z0-9_-]+)="([^"]*)"', player_match.group(1))) if player_match else {}
+
+        raw_title = post_attrs.get("post-title") or player_attrs.get("post-title") or "reddit-media"
+        title = html.unescape(raw_title)
+
+        poster = html.unescape(player_attrs.get("poster") or player_attrs.get("preview") or "")
+        content_href = html.unescape(post_attrs.get("content-href") or "")
+        post_type = post_attrs.get("post-type", "")
+
+        # 1. Native GIF check
+        if post_type == "gif" or ".gif" in content_href.lower():
+            if content_href and ".gif" in content_href.lower():
+                return MediaCandidate(
+                    title=title,
+                    kind="gif",
+                    source_url=content_href,
+                    thumbnail_url=poster or content_href,
+                    resolution="Original GIF",
+                    headers=dict(REDDIT_HEADERS),
+                    direct=True,
+                )
+
+        # 2. Check packaged-media-json for pre-multiplexed progressive MP4
+        if raw_pkg := player_attrs.get("packaged-media-json"):
+            try:
+                pkg_data = json.loads(html.unescape(raw_pkg))
+                duration = float(pkg_data.get("playbackMp4s", {}).get("duration") or 0)
+                permutations = pkg_data.get("playbackMp4s", {}).get("permutations", [])
+                if permutations:
+                    best = max(permutations, key=lambda p: int(p.get("source", {}).get("dimensions", {}).get("height", 0)))
+                    src_url = html.unescape(best["source"]["url"])
+                    dims = best["source"].get("dimensions", {})
+                    w, h = dims.get("width"), dims.get("height")
+                    res_label = f"{w}×{h}" if w and h else "Best available resolution"
+                    return MediaCandidate(
+                        title=title,
+                        kind="video",
+                        source_url=src_url,
+                        thumbnail_url=poster,
+                        duration_seconds=duration,
+                        duration_label=f"{int(duration // 60)}:{int(duration % 60):02d}" if duration else "",
+                        resolution=res_label,
+                        headers=dict(REDDIT_HEADERS),
+                        direct=True,
+                    )
+            except Exception:
+                pass
+
+        # 3. Check player src (HLS, DASH, or MP4)
+        if raw_src := player_attrs.get("src"):
+            src_url = html.unescape(raw_src)
+            return MediaCandidate(
+                title=title,
+                kind="video",
+                source_url=src_url,
+                thumbnail_url=poster,
+                resolution="Best available resolution",
+                headers=dict(REDDIT_HEADERS),
+                direct=True,
+            )
+
+        # 4. Check v.redd.it content_href
+        if "v.redd.it" in content_href:
+            hls_url = f"{content_href.rstrip('/')}/HLSPlaylist.m3u8"
+            return MediaCandidate(
+                title=title,
+                kind="video",
+                source_url=hls_url,
+                thumbnail_url=poster,
+                resolution="Best available resolution",
+                headers=dict(REDDIT_HEADERS),
+                direct=True,
+            )
+
+        raise ResolutionError("No compatible media streams in Shreddit metadata.")
+
+
+@dataclass(frozen=True)
+class RedditEmbedStrategy:
+    name: str = "reddit-embed"
+
+    def resolve(self, url: str) -> MediaCandidate:
+        match = re.search(r"/comments/([a-z0-9]+)", urlparse(url).path, re.I)
+        if not match:
+            req = Request(url, headers=REDDIT_HEADERS)
+            try:
+                with urlopen(req, timeout=10) as res:
+                    final_path = urlparse(res.geturl()).path
+                    match = re.search(r"/comments/([a-z0-9]+)", final_path, re.I)
+            except OSError:
+                pass
+        if not match:
+            raise ResolutionError("Could not determine Reddit post ID for embed.")
+
+        embed_url = f"https://www.reddit.com/comments/{match.group(1)}.embed"
+        req = Request(embed_url, headers=REDDIT_HEADERS)
+        try:
+            with urlopen(req, timeout=15) as res:
+                page = res.read().decode("utf-8", "replace")
+        except OSError as exc:
+            raise ResolutionError(f"Reddit embed request failed: {exc}") from exc
+
+        gif_matches = re.findall(r'https?://[^\s"\'<>]+\.gif[^\s"\'<>]*', page, re.I)
+        for g in gif_matches:
+            unescaped = html.unescape(g).rstrip(r"\ ")
+            if "i.redd.it" in unescaped or "preview.redd.it" in unescaped:
+                return MediaCandidate(
+                    title=f"reddit-gif-{match.group(1)}",
+                    kind="gif",
+                    source_url=unescaped,
+                    thumbnail_url=unescaped,
+                    resolution="Original GIF",
+                    headers=dict(REDDIT_HEADERS),
+                    direct=True,
+                )
+
+        v_matches = re.findall(r'https?://(?:v\.redd\.it|packaged-media\.redd\.it)[^\s"\'<>]+', page)
+        for v in v_matches:
+            unescaped = html.unescape(v).rstrip(r"\ ")
+            return MediaCandidate(
+                title=f"reddit-video-{match.group(1)}",
+                kind="video",
+                source_url=unescaped,
+                resolution="Best available resolution",
+                headers=dict(REDDIT_HEADERS),
+                direct=True,
+            )
+
+        raise ResolutionError("No media found in Reddit embed page.")
+
+
 @dataclass(frozen=True)
 class RedditProvider:
     root: Path
     name: str = "Reddit"
-    domains: tuple[str, ...] = ("reddit.com", "redd.it", "i.redd.it", "preview.redd.it", "redditmedia.com")
+    domains: tuple[str, ...] = ("reddit.com", "redd.it", "i.redd.it", "preview.redd.it", "redditmedia.com", "v.redd.it")
 
     def matches(self, url: str) -> bool:
         return host_matches(url, self.domains)
@@ -143,6 +305,8 @@ class RedditProvider:
     def strategies(self, url: str) -> tuple[ResolutionStrategy, ...]:
         return (
             DirectRedditGifStrategy(),
+            RedditShredditStrategy(),
+            RedditEmbedStrategy(),
             YtDlpStrategy(self.root),
             RedditJsonGifStrategy("https://www.reddit.com/comments/{post_id}.json?raw_json=1", "reddit-json"),
             RedditJsonGifStrategy("https://old.reddit.com/comments/{post_id}.json?raw_json=1", "old-reddit-json"),
