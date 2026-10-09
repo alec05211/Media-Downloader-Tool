@@ -7,8 +7,9 @@ from tkinter import Tk, filedialog
 from urllib.request import Request, urlopen
 
 from media_downloader.diagnostics import record_download_failure, record_resolution
+from media_downloader.models import MediaCandidate
 from media_downloader.pipeline import ProviderAdapter, resolve
-from media_downloader.providers import RedditProvider, YtDlpProvider
+from media_downloader.providers import RedditProvider, TikTokProvider, YtDlpProvider
 
 # In a PyInstaller one-file build, the program files are unpacked to a temporary
 # directory. Keep user data outside that directory so it survives app restarts.
@@ -27,10 +28,11 @@ FOLDER_LOCK = threading.Lock()
 
 PREVIEWS: dict[str, dict[str, object]] = {}
 DIRECT_MEDIA: dict[str, str] = {}
+RESOLVED_CANDIDATES: dict[str, MediaCandidate] = {}
 RESOLUTION_STRATEGIES: dict[str, str] = {}
 PROVIDERS: tuple[ProviderAdapter, ...] = (
     YtDlpProvider("YouTube", ("youtube.com", "youtu.be"), ROOT),
-    YtDlpProvider("TikTok", ("tiktok.com",), ROOT),
+    TikTokProvider(ROOT),
     YtDlpProvider("Instagram", ("instagram.com",), ROOT),
     YtDlpProvider("X", ("x.com", "twitter.com"), ROOT),
     RedditProvider(ROOT),
@@ -229,10 +231,11 @@ def preview(url: str) -> dict[str, object]:
     if not candidate:
         details = "; ".join(f"{attempt.strategy}: {attempt.detail}" for attempt in result.attempts)
         raise ValueError(f"No public media could be resolved. Tried: {details}")
+    RESOLVED_CANDIDATES[url] = candidate
     RESOLUTION_STRATEGIES[url] = result.attempts[-1].strategy
-    if candidate.direct:
+    if candidate.direct and candidate.kind == "gif":
         DIRECT_MEDIA[url] = candidate.source_url
-    if candidate.source_url and not candidate.direct:
+    if candidate.source_url:
         token = secrets.token_urlsafe(18)
         PREVIEWS[token] = {"url": candidate.source_url, "headers": candidate.headers}
         media_url = f"/api/stream/{token}"
@@ -253,6 +256,46 @@ def download(job: dict[str,str], provider: ProviderAdapter) -> None:
                 raise RuntimeError(f"Reddit direct GIF download failed: {exc}") from exc
             job["log"] = "Downloaded public Reddit GIF directly."
             job["status"] = "complete"
+            return
+        if direct_media_url := job.get("direct_media_url"):
+            ffmpeg = ffmpeg_binary()
+            if job["mode"] in {"gif", "audio"} and not ffmpeg: raise RuntimeError("Conversion runtime is missing. Run start.bat again, then retry.")
+            target_path = Path(job["path"])
+            download_target = target_path if job["mode"] == "video" else target_path.with_suffix(".mp4")
+            headers = {}
+            if raw_headers := job.get("direct_headers"):
+                try:
+                    headers = json.loads(raw_headers)
+                except Exception:
+                    headers = {}
+            if not headers:
+                headers = {"User-Agent": "Mozilla/5.0", "Referer": job["url"]}
+            request = Request(direct_media_url, headers=headers)
+            try:
+                with urlopen(request, timeout=60) as source, open(download_target, "wb") as destination:
+                    shutil.copyfileobj(source, destination)
+            except OSError as exc:
+                raise RuntimeError(f"Direct media download failed: {exc}") from exc
+            returncode = 0
+            output = "Direct media stream downloaded successfully."
+            if job["mode"] in {"gif", "audio"}:
+                intermediate = str(download_target)
+                conversion_args = ([ffmpeg, "-y", "-i", intermediate, "-vf", "fps=12,scale=640:-1:flags=lanczos", str(target_path)]
+                                    if job["mode"] == "gif" else [ffmpeg, "-y", "-i", intermediate, "-vn", "-codec:a", "libmp3lame", "-q:a", "2", str(target_path)])
+                conversion = subprocess.run(
+                    conversion_args,
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                )
+                output += "\n" + conversion.stdout + conversion.stderr
+                returncode = conversion.returncode
+                if returncode == 0:
+                    Path(intermediate).unlink(missing_ok=True)
+                else:
+                    returncode = conversion.returncode
+            job["log"] = output[-4000:]; job["status"] = "complete" if returncode == 0 else "failed"
+            if job["status"] == "failed":
+                record_download_failure(ROOT, job["url"], provider.name, job.get("strategy", "download"), output)
+                job["code"], job["error"] = classify_failure(output)
             return
         ffmpeg = ffmpeg_binary()
         if job["mode"] in {"gif", "audio"} and not ffmpeg: raise RuntimeError("Conversion runtime is missing. Run start.bat again, then retry.")
@@ -1027,7 +1070,13 @@ class Handler(BaseHTTPRequestHandler):
 
             job = {"url": url, "mode": mode, "path": path, "status": "downloading", "log": ""}
             job["strategy"] = RESOLUTION_STRATEGIES.get(url, "download")
-            if direct_url: job["direct_url"] = direct_url
+            if direct_url:
+                job["direct_url"] = direct_url
+            else:
+                candidate = RESOLVED_CANDIDATES.get(url)
+                if candidate and candidate.direct and candidate.source_url:
+                    job["direct_media_url"] = candidate.source_url
+                    job["direct_headers"] = json.dumps(candidate.headers)
             with LOCK: JOBS.append(job)
             threading.Thread(target=download, args=(job, provider), daemon=True).start()
             self.send_json({
