@@ -1,0 +1,9 @@
+{
+  "name": "com.media_downloader.launcher",
+  "description": "Launch the local Media Downloader application",
+  "path": "media_downloader_native_host.exe",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://ohajoejdjjakbicandnlljppfpkhimcf/"
+  ]
+}

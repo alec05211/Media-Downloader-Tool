@@ -39,6 +39,23 @@ For normal Windows installation, compile `installer.iss` using Inno Setup 6 afte
 
 As a lightweight installer with no additional tooling, run `install.ps1` once. It copies `application.exe` to the local app folder and creates Start-menu and desktop shortcuts.
 
+Both installers register the `media-downloader://` Windows protocol for Windows launchers and start the local server quietly at user sign-in on `http://127.0.0.1:38471/`. Chrome may keep a directly bookmarked custom-protocol URL in a blank tab instead of handing it to Windows, so bookmark the local HTTP address or use the pinned extension button for reliable one-click browser access. When the app is already running, the launcher reuses its local server and opens a fresh tab instead of starting another background server.
+
+## Chrome right-click menu
+
+The unpacked extension in `chrome-extension/` adds **Download with Media Downloader** when you right-click an image, video, audio element, or link. It copies the selected media URL when Chrome permits clipboard access and opens the compatible media or post URL through the background local server in a new tab.
+
+Clicking the extension's toolbar button also opens Media Downloader without prefilling a URL. Pin the extension from Chrome's Extensions menu for one-click access.
+
+To install it locally:
+
+1. Open `chrome://extensions` in Chrome.
+2. Enable **Developer mode**.
+3. Click **Load unpacked** and select this project's `chrome-extension` folder.
+4. Run `install.ps1` or the normal installer once to install and start the background local server.
+
+The extension has the fixed ID `ohajoejdjjakbicandnlljppfpkhimcf`. The downloader still supports the public providers listed above; on supported sites such as Instagram and Reddit, the extension sends the containing post URL when the exact CDN media URL is not a usable provider link.
+
 ## Boundaries
 
 The tool does not use credentials, work around DRM, download private/restricted content, or remove watermarks. It requests the best source media exposed by the supported extractor; platforms can change availability or branding at any time. Respect each platform's terms and the creator's rights.
