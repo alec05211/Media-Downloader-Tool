@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import html
 import json
+import math
 import re
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from html.parser import HTMLParser
 from http.cookiejar import CookieJar
 from pathlib import Path
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, urljoin, urlparse
 from urllib.request import HTTPCookieProcessor, Request, build_opener, urlopen
 
 from .models import MediaCandidate, ResolutionError
@@ -14,6 +17,26 @@ from .pipeline import ResolutionStrategy
 
 PUBLIC_AGENT = "Media-Downloader-Tool/1.0 (public-media resolution)"
 REDDIT_GIF_HOSTS = {"i.redd.it", "preview.redd.it"}
+
+# Prefer MP4/M4A so the merged result is broadly playable, but retain yt-dlp's
+# normal best-video/best-audio fallback for videos where YouTube exposes other
+# containers only.  A single ``best[ext=mp4]`` stream is no longer available on
+# many otherwise public YouTube videos.
+YTDLP_VIDEO_FORMAT = "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b"
+
+
+def yt_dlp_options() -> dict[str, object]:
+    """Shared safe defaults for public, no-login yt-dlp extraction."""
+    return {
+        "noplaylist": True,
+        "no_warnings": True,
+        "quiet": True,
+        "windows_hide": True,
+        "format": YTDLP_VIDEO_FORMAT,
+        # Deno is yt-dlp's default; Node is an additional supported fallback
+        # when it is already installed. Missing runtimes are ignored by yt-dlp.
+        "js_runtimes": {"deno": {}, "node": {}},
+    }
 
 
 def host_matches(url: str, domains: tuple[str, ...]) -> bool:
@@ -38,14 +61,17 @@ class YtDlpStrategy:
     def resolve(self, url: str) -> MediaCandidate:
         try:
             from yt_dlp import YoutubeDL
-            with YoutubeDL({"noplaylist": True, "no_warnings": True, "quiet": True,
-                            "format": "best[ext=mp4]"}) as downloader:
+            with YoutubeDL(yt_dlp_options()) as downloader:
                 info = downloader.extract_info(url, download=False)
         except Exception as exc:
             raise ResolutionError(str(exc) or "The source could not be processed.") from exc
         width, height = info.get("width"), info.get("height")
+        # Split video/audio selections have URLs in requested_formats rather
+        # than one playable URL. In that case the UI uses the thumbnail for the
+        # preview, while the download pass merges both streams with FFmpeg.
+        source_url = str(info.get("url") or "")
         return MediaCandidate(title=str(info.get("title") or "download"), kind="video",
-                              source_url=str(info.get("url") or ""), thumbnail_url=str(info.get("thumbnail") or ""),
+                              source_url=source_url, thumbnail_url=str(info.get("thumbnail") or ""),
                               duration_seconds=float(info.get("duration") or 0),
                               duration_label=str(info.get("duration_string") or ""),
                               resolution=f"{width}×{height}" if width and height else "Best available resolution",
@@ -129,6 +155,259 @@ class YtDlpProvider:
 
     def strategies(self, url: str) -> tuple[ResolutionStrategy, ...]:
         return (YtDlpStrategy(self.root),)
+
+
+@dataclass
+class _PageMedia:
+    url: str
+    source: str
+    prominence: float
+    order: int
+    width: int = 0
+    height: int = 0
+    duration: float = 0
+    size: int = 0
+    thumbnail: str = ""
+
+    @property
+    def score(self) -> float:
+        pixels = self.width * self.height
+        resolution_score = math.log2(pixels + 1) * 12 if pixels else 0
+        duration_score = min(self.duration, 14_400) / 240 if self.duration else 0
+        size_score = math.log2(self.size + 1) * 2 if self.size else 0
+        return self.prominence + resolution_score + duration_score + size_score - min(self.order, 200) * .25
+
+
+def _number(value: object) -> float:
+    try:
+        return float(str(value or "").strip())
+    except (TypeError, ValueError):
+        return 0
+
+
+def _duration_seconds(value: object) -> float:
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value or "").strip()
+    if not text:
+        return 0
+    if re.fullmatch(r"\d+(?:\.\d+)?", text):
+        return float(text)
+    match = re.fullmatch(r"P(?:(\d+(?:\.\d+)?)D)?T?(?:(\d+(?:\.\d+)?)H)?(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)S)?", text, re.I)
+    if not match:
+        return 0
+    days, hours, minutes, seconds = (_number(part) for part in match.groups())
+    return days * 86400 + hours * 3600 + minutes * 60 + seconds
+
+
+def _content_size(value: object) -> int:
+    if isinstance(value, (int, float)):
+        return int(value)
+    text = str(value or "").strip().lower().replace(",", "")
+    match = re.fullmatch(r"(\d+(?:\.\d+)?)\s*(b|kb|kib|mb|mib|gb|gib)?", text)
+    if not match:
+        return 0
+    multiplier = {"kb": 1000, "kib": 1024, "mb": 1_000_000, "mib": 1_048_576,
+                  "gb": 1_000_000_000, "gib": 1_073_741_824}.get(match.group(2) or "b", 1)
+    return int(float(match.group(1)) * multiplier)
+
+
+class _MediaPageParser(HTMLParser):
+    def __init__(self, page_url: str) -> None:
+        super().__init__(convert_charrefs=True)
+        self.page_url = page_url
+        self.candidates: list[_PageMedia] = []
+        self.meta: dict[str, str] = {}
+        self.json_ld: list[str] = []
+        self.title = ""
+        self._in_title = False
+        self._in_json_ld = False
+        self._script_parts: list[str] = []
+        self._video_depth = 0
+        self._order = 0
+
+    def add(self, raw_url: object, source: str, prominence: float, attrs: dict[str, str] | None = None) -> None:
+        value = html.unescape(str(raw_url or "").strip()).replace(r"\/", "/")
+        if not value or value.startswith(("data:", "blob:", "javascript:")):
+            return
+        resolved = urljoin(self.page_url, value)
+        if urlparse(resolved).scheme not in {"http", "https"}:
+            return
+        values = attrs or {}
+        self.candidates.append(_PageMedia(
+            resolved, source, prominence, self._order,
+            int(_number(values.get("width"))), int(_number(values.get("height"))),
+            _duration_seconds(values.get("duration")), _content_size(values.get("size")),
+            urljoin(self.page_url, values.get("poster", "")) if values.get("poster") else "",
+        ))
+        self._order += 1
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        values = {key.lower(): value or "" for key, value in attrs}
+        tag = tag.lower()
+        if tag == "video":
+            self._video_depth += 1
+            self.add(values.get("src"), "video", 1000, values)
+        elif tag == "source":
+            self.add(values.get("src"), "source", 950 if self._video_depth else 700, values)
+        elif tag == "meta":
+            key = (values.get("property") or values.get("name") or values.get("itemprop") or "").lower()
+            content = values.get("content", "")
+            if key and content:
+                self.meta[key] = content
+                if key in {"og:video", "og:video:url", "og:video:secure_url", "twitter:player:stream"}:
+                    self.add(content, "open-graph", 900)
+        elif tag == "script" and "ld+json" in values.get("type", "").lower():
+            self._in_json_ld = True
+            self._script_parts = []
+        elif tag == "title":
+            self._in_title = True
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
+        if tag == "video" and self._video_depth:
+            self._video_depth -= 1
+        elif tag == "script" and self._in_json_ld:
+            self.json_ld.append("".join(self._script_parts))
+            self._in_json_ld = False
+            self._script_parts = []
+        elif tag == "title":
+            self._in_title = False
+
+    def handle_data(self, data: str) -> None:
+        if self._in_json_ld:
+            self._script_parts.append(data)
+        elif self._in_title:
+            self.title += data
+
+
+def _json_ld_media(parser: _MediaPageParser, value: object) -> None:
+    if isinstance(value, list):
+        for item in value:
+            _json_ld_media(parser, item)
+        return
+    if not isinstance(value, dict):
+        return
+    kind = value.get("@type")
+    types = {str(item).lower() for item in kind} if isinstance(kind, list) else {str(kind).lower()}
+    is_media = bool(types & {"videoobject", "audioobject", "mediaobject"})
+    if is_media:
+        attrs = {
+            "width": str(value.get("width") or ""), "height": str(value.get("height") or ""),
+            "duration": str(value.get("duration") or ""), "size": str(value.get("contentSize") or ""),
+            "poster": str(value.get("thumbnailUrl") or ""),
+        }
+        for key in ("contentUrl", "embedUrl"):
+            raw = value.get(key)
+            if isinstance(raw, list):
+                for item in raw:
+                    parser.add(item, "json-ld", 850 if key == "contentUrl" else 650, attrs)
+            else:
+                parser.add(raw, "json-ld", 850 if key == "contentUrl" else 650, attrs)
+    for child in value.values():
+        if isinstance(child, (dict, list)):
+            _json_ld_media(parser, child)
+
+
+def _probe_page_media(item: _PageMedia, referer: str) -> _PageMedia | None:
+    request = Request(item.url, method="HEAD", headers={"User-Agent": PUBLIC_AGENT, "Referer": referer})
+    try:
+        with urlopen(request, timeout=8) as response:
+            content_type = response.headers.get("Content-Type", "").lower()
+            if content_type.startswith(("text/html", "application/xhtml")):
+                return None
+            item.url = response.geturl()
+            item.size = item.size or _content_size(response.headers.get("Content-Length"))
+    except OSError:
+        # Many CDNs reject HEAD while allowing GET, so an unprobed candidate is
+        # still eligible rather than being treated as definitively unavailable.
+        pass
+    return item
+
+
+@dataclass(frozen=True)
+class GenericPageStrategy:
+    name: str = "generic-page-candidates"
+
+    def resolve(self, url: str) -> MediaCandidate:
+        request = Request(url, headers={"User-Agent": PUBLIC_AGENT, "Accept": "text/html,application/xhtml+xml"})
+        try:
+            with urlopen(request, timeout=25) as response:
+                content_type = response.headers.get("Content-Type", "").lower()
+                body = response.read(5_000_000)
+                final_url = response.geturl()
+        except OSError as exc:
+            raise ResolutionError(f"The public page could not be read: {exc}") from exc
+
+        direct_suffix = Path(urlparse(final_url).path).suffix.lower()
+        direct_types = ("video/", "audio/", "application/vnd.apple.mpegurl", "application/x-mpegurl", "application/dash+xml")
+        if content_type.startswith(direct_types) or direct_suffix in {".mp4", ".webm", ".mov", ".m4v", ".m3u8", ".mpd"}:
+            return MediaCandidate(title=Path(urlparse(final_url).path).stem or "download", kind="video",
+                                  source_url=final_url, resolution="Direct media", direct=True)
+        text = body.decode("utf-8", "replace")
+        parser = _MediaPageParser(final_url)
+        try:
+            parser.feed(text)
+        except Exception as exc:
+            raise ResolutionError(f"The page markup could not be inspected: {exc}") from exc
+
+        for raw_json in parser.json_ld:
+            try:
+                _json_ld_media(parser, json.loads(raw_json))
+            except (TypeError, ValueError):
+                continue
+
+        manifest_pattern = r'''(?i)(?:https?:)?//[^\s"'<>\\]+?\.(?:m3u8|mpd)(?:\?[^\s"'<>\\]*)?|(?:/|\.\.?/)[^\s"'<>\\]+?\.(?:m3u8|mpd)(?:\?[^\s"'<>\\]*)?'''
+        for match in re.finditer(manifest_pattern, html.unescape(text).replace(r"\/", "/")):
+            parser.add(match.group(0), "manifest", 750)
+
+        og_width = int(_number(parser.meta.get("og:video:width")))
+        og_height = int(_number(parser.meta.get("og:video:height")))
+        og_duration = _duration_seconds(parser.meta.get("video:duration") or parser.meta.get("og:video:duration"))
+        for item in parser.candidates:
+            if item.source == "open-graph":
+                item.width = item.width or og_width
+                item.height = item.height or og_height
+                item.duration = item.duration or og_duration
+
+        deduplicated: dict[str, _PageMedia] = {}
+        for item in parser.candidates:
+            current = deduplicated.get(item.url)
+            if current is None or item.score > current.score:
+                deduplicated[item.url] = item
+        if not deduplicated:
+            raise ResolutionError("No public <video>, <source>, Open Graph, JSON-LD, HLS, or DASH media candidates were found.")
+
+        candidates = list(deduplicated.values())[:32]
+        with ThreadPoolExecutor(max_workers=min(8, len(candidates))) as executor:
+            probed = list(executor.map(lambda item: _probe_page_media(item, final_url), candidates))
+        ranked = sorted((item for item in probed if item is not None), key=lambda item: item.score, reverse=True)
+        if not ranked:
+            raise ResolutionError("The discovered media candidates resolved to HTML pages rather than downloadable media.")
+        best = ranked[0]
+        title = (parser.meta.get("og:title") or parser.title or Path(urlparse(url).path).stem or "download").strip()
+        thumbnail = best.thumbnail or parser.meta.get("og:image", "")
+        resolution = f"{best.width}×{best.height}" if best.width and best.height else "Best ranked page candidate"
+        return MediaCandidate(
+            title=title, kind="video", source_url=best.url, thumbnail_url=thumbnail,
+            duration_seconds=best.duration,
+            duration_label=(f"{int(best.duration // 60)}:{int(best.duration % 60):02d}" if best.duration else ""),
+            resolution=resolution,
+            headers={"User-Agent": PUBLIC_AGENT, "Referer": final_url}, direct=True,
+        )
+
+
+@dataclass(frozen=True)
+class GenericProvider:
+    root: Path
+    name: str = "Generic"
+
+    def matches(self, url: str) -> bool:
+        parsed = urlparse(url)
+        return parsed.scheme.lower() in {"http", "https"} and bool(parsed.netloc)
+
+    def strategies(self, url: str) -> tuple[ResolutionStrategy, ...]:
+        return (YtDlpStrategy(self.root), GenericPageStrategy())
 
 
 REDDIT_AGENT = (

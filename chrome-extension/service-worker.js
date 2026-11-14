@@ -1,4 +1,6 @@
 const MENU_ID = 'media-downloader-open';
+const APP_ORIGIN = 'http://127.0.0.1:38471';
+const NATIVE_HOST = 'com.media_downloader.launcher';
 const SUPPORTED_HOSTS = [
   'youtube.com',
   'youtu.be',
@@ -36,6 +38,45 @@ function isSupportedProviderUrl(value) {
   return SUPPORTED_HOSTS.some(domain => host === domain || host.endsWith(`.${domain}`));
 }
 
+function appIsReady() {
+  return fetch(`${APP_ORIGIN}/api/app-status`, {cache: 'no-store'})
+    .then(response => response.ok ? response.json() : null)
+    .then(status => status?.app === 'media-downloader')
+    .catch(() => false);
+}
+
+function startApp() {
+  return new Promise((resolve, reject) => {
+    chrome.runtime.sendNativeMessage(NATIVE_HOST, {action: 'start'}, response => {
+      const error = chrome.runtime.lastError;
+      if (error) {
+        reject(new Error(error.message));
+      } else if (!response?.ok) {
+        reject(new Error(response?.error || 'The launcher did not start the application.'));
+      } else {
+        resolve();
+      }
+    });
+  });
+}
+
+async function waitForApp() {
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    if (await appIsReady()) return true;
+    await new Promise(resolve => setTimeout(resolve, 250));
+  }
+  return false;
+}
+
+async function openApp(url = '') {
+  if (!await appIsReady()) await startApp();
+  if (!await waitForApp()) throw new Error('The local server did not become ready.');
+  const target = url ? `${APP_ORIGIN}/?url=${encodeURIComponent(url)}` : `${APP_ORIGIN}/`;
+  await chrome.tabs.create({url: target, active: true});
+  await chrome.action.setBadgeText({text: ''});
+  await chrome.action.setTitle({title: 'Open Media Downloader'});
+}
+
 async function copyToClipboard(tabId, value) {
   if (!tabId || !isHttpUrl(value)) return;
   try {
@@ -65,7 +106,13 @@ if (chrome.contextMenus?.onClicked) {
     if (!isHttpUrl(appUrl)) return;
 
     await copyToClipboard(tab && tab.id, exactMediaUrl || appUrl);
-    const localUrl = `http://127.0.0.1:38471/?url=${encodeURIComponent(appUrl)}`;
-    await chrome.tabs.create({url: localUrl, active: true});
+    try {
+      await openApp(appUrl);
+    } catch (error) {
+      console.error('Could not open Media Downloader:', error);
+      await chrome.action.setBadgeBackgroundColor({color: '#b42318'});
+      await chrome.action.setBadgeText({text: '!'});
+      await chrome.action.setTitle({title: `Media Downloader could not start: ${error.message}`});
+    }
   });
 }

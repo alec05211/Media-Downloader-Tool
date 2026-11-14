@@ -1,10 +1,11 @@
 {
   "manifest_version": 3,
   "name": "Media Downloader Launcher",
-  "version": "1.2.1",
+  "version": "1.3.0",
   "description": "Open supported images, videos, audio, and links in the local Media Downloader app.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAnIVoaNp8b+UgX7IBwDd/zv247G5Nq8Ek0iGQvOILXtXr24C7hiEPnPGNJ+OeODG0SWYcQHY/0zVjHoQ3DseAS6URsUbocmyi7LelKyy7LHyVtemu5IxsnD0jVzqJjaVqPWByhTYl8bn1lmV8bY6pXOQZn3551wpApiS2ds97qaciPWSiOpgwerctLIn66mRd2qYCIzIqYcgFjDJMzrUysTbN/H5+07HAAWi3B6fwBqniSehFjvS1QXuAYWjxZUHq4lH4OUD4y5d9mH+rXt9gQBXKlTJu9gQ4Bm4iMGpeEIN61cU9AuV4Tzg5zNs4+24DUlXWMY50oRq6GxxsZBFd2QIDAQAB",
-  "permissions": ["activeTab", "clipboardWrite", "contextMenus", "scripting"],
+  "permissions": ["activeTab", "clipboardWrite", "contextMenus", "nativeMessaging", "scripting"],
+  "host_permissions": ["http://127.0.0.1:38471/*"],
   "action": {
     "default_title": "Open Media Downloader",
     "default_icon": {

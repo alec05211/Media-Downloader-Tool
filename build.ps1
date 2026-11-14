@@ -17,6 +17,7 @@ if ($env:PYTHONPATH) {
 py -m PyInstaller --noconfirm --clean --onefile --noconsole --name application `
   --collect-all imageio_ffmpeg `
   --collect-all yt_dlp `
+  --collect-all yt_dlp_ejs `
   app.py
 py -m PyInstaller --noconfirm --clean --onefile --console --name media_downloader_native_host native_host.py
 Get-Process -Name "application", "Media Downloader" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue

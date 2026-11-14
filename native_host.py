@@ -26,6 +26,18 @@ def validated_url(message: object) -> str:
     return candidate
 
 
+def application_arguments(message: object) -> list[str]:
+    """Build arguments for either a quiet server start or a normal open."""
+    if not isinstance(message, dict):
+        raise ValueError("Unsupported native-host action.")
+    action = message.get("action")
+    if action == "start":
+        return ["--background"]
+    if action == "open":
+        return [protocol_url(message)]
+    raise ValueError("Unsupported native-host action.")
+
+
 def protocol_url(message: object) -> str:
     candidate = validated_url(message)
     return "media-downloader://open" if not candidate else f"media-downloader://open?{urlencode({'url': candidate})}"
@@ -59,13 +71,12 @@ def application_path() -> Path:
 def main() -> int:
     try:
         message = read_message()
-        if not isinstance(message, dict) or message.get("action") != "open":
-            raise ValueError("Unsupported native-host action.")
+        arguments = application_arguments(message)
         executable = application_path()
         if not executable.is_file():
             raise FileNotFoundError(f"Media Downloader is not installed beside the native host: {executable}")
         subprocess.Popen(
-            [str(executable), protocol_url(message)],
+            [str(executable), *arguments],
             close_fds=True,
             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS,
         )

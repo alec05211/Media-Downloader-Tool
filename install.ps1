@@ -72,9 +72,21 @@ Set-Item -Path "$protocolKey\DefaultIcon" -Value "`"$installedExe`",0"
 New-Item -Path "$protocolKey\shell\open\command" -Force | Out-Null
 Set-Item -Path "$protocolKey\shell\open\command" -Value "`"$installedExe`" `"%1`""
 
-$nativeHostKey = 'HKCU:\Software\Google\Chrome\NativeMessagingHosts\com.media_downloader.launcher'
-New-Item -Path $nativeHostKey -Force | Out-Null
-Set-Item -Path $nativeHostKey -Value $installedNativeManifest
+$nativeHostKeys = @(
+  'HKCU:\Software\Google\Chrome\NativeMessagingHosts\com.media_downloader.launcher',
+  'HKCU:\Software\WOW6432Node\Google\Chrome\NativeMessagingHosts\com.media_downloader.launcher'
+)
+foreach ($nativeHostKey in $nativeHostKeys) {
+  New-Item -Path $nativeHostKey -Force | Out-Null
+  Set-Item -Path $nativeHostKey -Value $installedNativeManifest
+}
+
+$identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+$principal = New-Object Security.Principal.WindowsPrincipal($identity)
+if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+  & reg.exe add 'HKLM\Software\Google\Chrome\NativeMessagingHosts\com.media_downloader.launcher' /ve /t REG_SZ /d $installedNativeManifest /f /reg:64 | Out-Null
+  & reg.exe add 'HKLM\Software\Google\Chrome\NativeMessagingHosts\com.media_downloader.launcher' /ve /t REG_SZ /d $installedNativeManifest /f /reg:32 | Out-Null
+}
 
 $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 New-Item -Path $runKey -Force | Out-Null

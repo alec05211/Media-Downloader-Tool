@@ -31,7 +31,10 @@ Root: HKCR; Subkey: "media-downloader"; ValueType: string; ValueName: ""; ValueD
 Root: HKCR; Subkey: "media-downloader"; ValueType: string; ValueName: "URL Protocol"; ValueData: ""
 Root: HKCR; Subkey: "media-downloader\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExeName}"",0"
 Root: HKCR; Subkey: "media-downloader\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExeName}"" ""%1"""
-Root: HKCU; Subkey: "Software\Google\Chrome\NativeMessagingHosts\com.media_downloader.launcher"; ValueType: string; ValueName: ""; ValueData: "{app}\native-messaging-host.json"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Google\Chrome\NativeMessagingHosts\com.media_downloader.launcher"; ValueType: string; ValueName: ""; ValueData: "{app}\native-messaging-host.json"; Flags: uninsdeletekey 64bit
+Root: HKCU; Subkey: "Software\Google\Chrome\NativeMessagingHosts\com.media_downloader.launcher"; ValueType: string; ValueName: ""; ValueData: "{app}\native-messaging-host.json"; Flags: uninsdeletekey 32bit
+Root: HKLM; Subkey: "Software\Google\Chrome\NativeMessagingHosts\com.media_downloader.launcher"; ValueType: string; ValueName: ""; ValueData: "{app}\native-messaging-host.json"; Flags: uninsdeletekey 64bit
+Root: HKLM; Subkey: "Software\Google\Chrome\NativeMessagingHosts\com.media_downloader.launcher"; ValueType: string; ValueName: ""; ValueData: "{app}\native-messaging-host.json"; Flags: uninsdeletekey 32bit
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "{#AppName}"; ValueData: """{app}\{#AppExeName}"" --background"; Flags: uninsdeletevalue
 
 [Tasks]
